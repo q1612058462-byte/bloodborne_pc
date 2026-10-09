@@ -10,12 +10,15 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 namespace BbportPortable {
@@ -48,6 +51,14 @@ sealed class LaunchOptions {
     public string Root;
     public string Game;
     public string SaveRoot;
+    public bool LanMode;
+    public bool LanHost;
+    public bool LanSeamless;
+    public string LanAddress;
+    public string LanNpid;
+    public string LanPassword;
+    public string LanEmail;
+    public string LanSecret;
     public bool AutoBackup;
     public bool DesktopLink;
     public bool StartMenuLink;
@@ -234,7 +245,11 @@ static class SaveTools {
     public static void ImportSave(SaveValidation source, string userRoot, string targetTitle) {
         if (!BloodborneIds.Contains(targetTitle))
             throw new InvalidDataException("当前游戏区域 ID 无效：" + targetTitle);
-        string titleRoot = Path.Combine(userRoot, "savedata", "1", targetTitle);
+        DirectoryInfo rootInfo = new DirectoryInfo(userRoot);
+        bool shadp2pLayout = rootInfo.Name.Equals("1000", StringComparison.OrdinalIgnoreCase) &&
+            rootInfo.Parent != null && rootInfo.Parent.Name.Equals("shadp2p-home", StringComparison.OrdinalIgnoreCase);
+        string titleRoot = shadp2pLayout ? Path.Combine(userRoot, "savedata", targetTitle) :
+            Path.Combine(userRoot, "savedata", "1", targetTitle);
         string target = Path.Combine(titleRoot, "SPRJ0005");
         string targetMeta = target + ".sce_sys";
         string token = Guid.NewGuid().ToString("N");
@@ -431,6 +446,9 @@ sealed class MainForm : Form {
     static readonly Choice[] QualityProfiles = {
         new Choice("极低（720p／性能优先）", "verylow"), new Choice("低（1080p／较低画质）", "low"),
         new Choice("中（1080p／均衡）", "medium"), new Choice("高（1440p／质量优先）", "high") };
+    static readonly Choice[] CoreModes = {
+        new Choice("原生单机核心（bbport）", "native"),
+        new Choice("局域网联机核心（shadp2p，实验性）", "shadp2p") };
     static readonly string[][] CheatDefinitions = {
         new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
         new string[] { "infinite_echoes", "无限血之回响（固定为 666,666,666）", "Trainer Infinite Echoes (CUSA03173 1.09)", "experimental" },
@@ -511,6 +529,7 @@ sealed class MainForm : Form {
     readonly string stateFile;
     TextBox rootBox, gameBox, logBox;
     Label gameStatus, statusLabel;
+    ComboBox coreMode;
     ComboBox resolution, frameRate, upscaler, preset, live, modelLod, language, presentMode;
     ComboBox qualityProfile;
     CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink;
@@ -523,6 +542,10 @@ sealed class MainForm : Form {
     readonly Dictionary<string, CheckBox> cheats = new Dictionary<string, CheckBox>();
     TextBox saveRootBox;
     CheckBox autoBackup;
+    TextBox lanAddressBox, lanNpidBox, lanPasswordBox, lanEmailBox, lanSecretBox;
+    CheckBox lanHost, lanSeamless;
+    Label lanStatus;
+    Button lanStartServerButton, lanStopServerButton, lanTestButton, lanRegisterButton;
     Label saveStatus;
     ListView backupList;
     ListView characterList;
@@ -534,6 +557,7 @@ sealed class MainForm : Form {
     ProgressBar progress;
     volatile bool busy;
     Process launcherProcess;
+    Process shadNetProcess;
     string lastRunLog;
     string expectedProbeHash;
     readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
@@ -642,12 +666,14 @@ sealed class MainForm : Form {
         Image background = LauncherBackground();
         tabs = new TabControl { Dock = DockStyle.Fill };
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
         logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
         tabs.TabPages.Add(settingsPage);
+        tabs.TabPages.Add(lanPage);
         tabs.TabPages.Add(inputPage);
         tabs.TabPages.Add(savePage);
         tabs.TabPages.Add(cheatPage);
@@ -674,6 +700,16 @@ sealed class MainForm : Form {
         gameStatus = Note("");
         AddSpan(folders, gameStatus);
         column.Controls.Add(folders.Parent);
+
+        TableLayoutPanel core = Group("启动核心", 2);
+        coreMode = Combo(core, "运行模式", CoreModes);
+        coreMode.SelectedIndexChanged += delegate {
+            bool lan = Value(coreMode) == "shadp2p";
+            playButton.Text = lan ? "启动局域网游戏" : "启动游戏";
+            if (saveRootBox != null) RefreshSaveManager();
+        };
+        AddSpan(core, Note("原生核心保留当前画质、键鼠、手柄映射和金手指功能；shadp2p 使用独立的上游模拟器核心，只用于局域网联机。"));
+        column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
         qualityProfile = Combo(recommended, "方案", QualityProfiles);
@@ -724,6 +760,52 @@ sealed class MainForm : Form {
         AddSpan(extras, Flow(desktopLink, startMenuLink));
         AddSpan(extras, Note("启动器界面为中文；当前上游游戏内设置菜单只提供英语和俄语。"));
         column.Controls.Add(extras.Parent);
+
+        TableLayoutPanel lanColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        lanColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        lanPage.Controls.Add(lanColumn);
+
+        TableLayoutPanel lanConnection = Group("shadp2p 局域网连接", 2);
+        lanAddressBox = new TextBox { Dock = DockStyle.Fill };
+        AddRow(lanConnection, "服务器地址", lanAddressBox, null);
+        lanNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
+        AddRow(lanConnection, "联机 ID（NPID）", lanNpidBox, null);
+        lanPasswordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+        AddRow(lanConnection, "联机密码", lanPasswordBox, null);
+        lanEmailBox = new TextBox { Dock = DockStyle.Fill };
+        AddRow(lanConnection, "注册邮箱", lanEmailBox, null);
+        lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
+        AddSpan(lanConnection, lanSeamless);
+        AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
+        lanColumn.Controls.Add(lanConnection.Parent);
+
+        TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
+        lanHost = Check("本机同时作为局域网服务器（启动游戏时自动启动）");
+        AddSpan(lanServer, lanHost);
+        lanSecretBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+        AddRow(lanServer, "注册密钥", lanSecretBox, null);
+        FlowLayoutPanel lanButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+        lanStartServerButton = new Button { Text = "启动本机服务器", AutoSize = true };
+        lanStopServerButton = new Button { Text = "停止本机服务器", AutoSize = true, Enabled = false };
+        lanTestButton = new Button { Text = "检测服务器", AutoSize = true };
+        lanRegisterButton = new Button { Text = "注册此账号", AutoSize = true };
+        lanStartServerButton.Click += delegate { StartLanServerFromUi(); };
+        lanStopServerButton.Click += delegate { StopLanServer(); };
+        lanTestButton.Click += delegate { TestLanServerFromUi(); };
+        lanRegisterButton.Click += delegate { RegisterLanAccountFromUi(); };
+        lanButtons.Controls.AddRange(new Control[] { lanStartServerButton, lanStopServerButton,
+            lanTestButton, lanRegisterButton });
+        AddSpan(lanServer, lanButtons);
+        lanStatus = Note("尚未检测服务器。");
+        AddSpan(lanServer, lanStatus);
+        AddSpan(lanServer, Note("仅限可信局域网：TCP 31313、UDP 31314、TCP 31315。shadNet 的 TCP 游戏协议本身不加密，请勿在路由器上做公网端口转发。每位玩家必须使用不同的联机 ID。"));
+        lanColumn.Controls.Add(lanServer.Parent);
+
+        TableLayoutPanel lanCompatibility = Group("兼容性与存档", 2);
+        AddSpan(lanCompatibility, Note("当前打包核心由 shadp2p 官方 2026-08-16 配对发布构建，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
+        AddSpan(lanCompatibility, Note("联机核心存档固定保存在“玩家数据目录\\shadp2p-home\\1000\\savedata”。选择联机模式后，存档管理页会自动管理和备份这一套存档，不会覆盖原生单机存档。"));
+        lanColumn.Controls.Add(lanCompatibility.Parent);
 
         TableLayoutPanel inputColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -1074,6 +1156,16 @@ sealed class MainForm : Form {
         gameBox.Text = Get(state, "game_dir", "");
         saveRootBox.Text = Get(state, "save_root", SaveTools.DefaultRoot);
         autoBackup.Checked = Get(state, "auto_backup", "1") == "1";
+        SelectValue(coreMode, Get(state, "core_mode", "native"));
+        lanAddressBox.Text = Get(state, "lan_address", LocalLanAddress());
+        lanNpidBox.Text = Get(state, "lan_npid", "");
+        lanPasswordBox.Text = UnprotectSecret(Get(state, "lan_password_dpapi", ""));
+        lanEmailBox.Text = Get(state, "lan_email", "");
+        string savedLanSecret = UnprotectSecret(Get(state, "lan_secret_dpapi", ""));
+        if (savedLanSecret.Length == 0) savedLanSecret = Get(state, "lan_secret", CreateRegistrationSecret());
+        lanSecretBox.Text = savedLanSecret;
+        lanHost.Checked = Get(state, "lan_host", "0") == "1";
+        lanSeamless.Checked = Get(state, "lan_seamless", "0") == "1";
         SelectValue(qualityProfile, Get(state, "quality_profile", "medium"));
         Dictionary<string, string> ini = ReadValues(Path.Combine(rootBox.Text, "bbport.ini"));
         SelectValue(resolution, Get(ini, "output_res", DefaultResolution()));
@@ -1122,6 +1214,428 @@ sealed class MainForm : Form {
         string value;
         return map.TryGetValue(key, out value) ? value : fallback;
     }
+
+    static string ProtectSecret(string value) {
+        if (string.IsNullOrEmpty(value)) return "";
+        try {
+            byte[] plain = Encoding.UTF8.GetBytes(value);
+            return Convert.ToBase64String(ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser));
+        } catch { return ""; }
+    }
+
+    static string UnprotectSecret(string value) {
+        if (string.IsNullOrEmpty(value)) return "";
+        try {
+            byte[] cipher = Convert.FromBase64String(value);
+            return Encoding.UTF8.GetString(ProtectedData.Unprotect(cipher, null, DataProtectionScope.CurrentUser));
+        } catch { return ""; }
+    }
+
+    static string CreateRegistrationSecret() {
+        byte[] bytes = new byte[18];
+        using (RandomNumberGenerator random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+        return Convert.ToBase64String(bytes).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+    }
+
+    static string LocalLanAddress() {
+        try {
+            foreach (IPAddress address in Dns.GetHostEntry(Dns.GetHostName()).AddressList) {
+                if (address.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(address)) continue;
+                byte[] octets = address.GetAddressBytes();
+                if (octets[0] == 169 && octets[1] == 254) continue;
+                return address.ToString();
+            }
+        } catch { }
+        return "127.0.0.1";
+    }
+
+    static bool TryParseLanEndpoint(string value, out string host, out int port) {
+        host = "";
+        port = 31313;
+        string text = (value ?? "").Trim();
+        if (text.Length == 0) return false;
+        if (text.IndexOf("://", StringComparison.Ordinal) >= 0) {
+            Uri uri;
+            if (!Uri.TryCreate(text, UriKind.Absolute, out uri)) return false;
+            host = uri.Host;
+            if (!uri.IsDefaultPort) port = uri.Port;
+        } else {
+            int colon = text.LastIndexOf(':');
+            if (colon > 0 && text.IndexOf(':') == colon) {
+                int parsed;
+                if (int.TryParse(text.Substring(colon + 1), out parsed) && parsed > 0 && parsed <= 65535) {
+                    port = parsed;
+                    text = text.Substring(0, colon);
+                }
+            }
+            host = text.Trim();
+        }
+        if (host == "0.0.0.0" || host.Length == 0 || host.IndexOfAny(new char[] { '/', '\\', ' ' }) >= 0)
+            return false;
+        IPAddress parsedAddress;
+        return IPAddress.TryParse(host, out parsedAddress) || Regex.IsMatch(host, @"^[A-Za-z0-9.-]+$");
+    }
+
+    static JavaScriptSerializer JsonSerializer() {
+        JavaScriptSerializer serializer = new JavaScriptSerializer();
+        serializer.MaxJsonLength = int.MaxValue;
+        serializer.RecursionLimit = 100;
+        return serializer;
+    }
+
+    static Dictionary<string, object> ReadJsonObject(string path) {
+        try {
+            if (File.Exists(path)) {
+                object value = JsonSerializer().DeserializeObject(File.ReadAllText(path, Encoding.UTF8));
+                Dictionary<string, object> dictionary = value as Dictionary<string, object>;
+                if (dictionary != null) return dictionary;
+            }
+        } catch { }
+        return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    static Dictionary<string, object> ChildObject(Dictionary<string, object> parent, string key) {
+        object value;
+        Dictionary<string, object> child = parent.TryGetValue(key, out value) ?
+            value as Dictionary<string, object> : null;
+        if (child == null) {
+            child = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            parent[key] = child;
+        }
+        return child;
+    }
+
+    static void WriteJson(string path, object value) {
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllText(path, JsonSerializer().Serialize(value), new UTF8Encoding(false));
+    }
+
+    void ConfigureLanClient(LaunchOptions options) {
+        string client = Path.Combine(options.Root, "shadp2p", "client");
+        string portableUser = Path.Combine(client, "user");
+        string home = Path.Combine(options.SaveRoot, "shadp2p-home");
+        Directory.CreateDirectory(portableUser);
+        Directory.CreateDirectory(home);
+
+        string host;
+        int port;
+        if (!TryParseLanEndpoint(options.LanAddress, out host, out port))
+            throw new InvalidDataException("局域网服务器地址无效。");
+
+        string configPath = Path.Combine(portableUser, "config.json");
+        Dictionary<string, object> config = ReadJsonObject(configPath);
+        Dictionary<string, object> general = ChildObject(config, "General");
+        general["home_dir"] = home;
+        general["connected_to_network"] = true;
+        general["shad_net_enabled"] = true;
+        general["shadnet_server"] = host + ":" + port;
+        general["shadnet_webapi_server"] = "http://" + host + ":31315";
+        general["signaling_info"] = "";
+        general["enable_upnp"] = false;
+        WriteJson(configPath, config);
+
+        string usersPath = Path.Combine(portableUser, "users.json");
+        Dictionary<string, object> usersRoot = ReadJsonObject(usersPath);
+        Dictionary<string, object> users = ChildObject(usersRoot, "Users");
+        List<object> list = new List<object>();
+        object existingUsers;
+        object[] oldUsers = users.TryGetValue("user", out existingUsers) ? existingUsers as object[] : null;
+        if (oldUsers != null) list.AddRange(oldUsers);
+        Dictionary<string, object> primary = null;
+        foreach (object item in list) {
+            Dictionary<string, object> candidate = item as Dictionary<string, object>;
+            object id;
+            if (candidate != null && candidate.TryGetValue("user_id", out id) && Convert.ToInt32(id) == 1000) {
+                primary = candidate; break;
+            }
+        }
+        if (primary == null) {
+            primary = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            list.Insert(0, primary);
+        }
+        primary["user_id"] = 1000;
+        primary["user_name"] = options.LanNpid;
+        primary["user_color"] = 1;
+        primary["player_index"] = 1;
+        primary["shadnet_npid"] = options.LanNpid;
+        primary["shadnet_password"] = options.LanPassword;
+        primary["shadnet_token"] = "";
+        primary["shadnet_email"] = options.LanEmail;
+        primary["shadnet_enabled"] = true;
+        primary["np_country"] = "cn";
+        primary["np_language"] = "zh";
+        primary["np_age"] = 30;
+        primary["np_date_of_birth"] = "1994-01-01";
+        users["user"] = list;
+        if (!users.ContainsKey("commit_hash")) users["commit_hash"] = "";
+        WriteJson(usersPath, usersRoot);
+
+        Dictionary<string, object> overrides = new Dictionary<string, object>();
+        overrides["https://ss4.scej-network.jp:20443"] = "http://thehuntersdream.com";
+        overrides["http://thehuntersdream.com:18671/summon_messenger"] =
+            "http://" + host + ":31315";
+        WriteJson(Path.Combine(portableUser, "host_overrides.json"), overrides);
+        Log("shadp2p 客户端配置已写入：" + portableUser);
+    }
+
+    static string LanPlayerRoot(LaunchOptions options) {
+        return Path.Combine(options.SaveRoot, "shadp2p-home", "1000");
+    }
+
+    LaunchOptions CollectLanOnly() {
+        LaunchOptions options = new LaunchOptions();
+        options.Root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
+        options.SaveRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"'));
+        options.LanMode = true;
+        options.LanHost = lanHost.Checked;
+        options.LanSeamless = lanSeamless.Checked;
+        options.LanAddress = lanAddressBox.Text.Trim();
+        options.LanNpid = lanNpidBox.Text.Trim();
+        options.LanPassword = lanPasswordBox.Text;
+        options.LanEmail = lanEmailBox.Text.Trim();
+        options.LanSecret = lanSecretBox.Text;
+        return options;
+    }
+
+    static void WriteShadNetConfig(string path, LaunchOptions options) {
+        StringBuilder text = new StringBuilder();
+        text.AppendLine("[General]");
+        text.AppendLine("Host=0.0.0.0");
+        text.AppendLine("UnsecuredPort=31313");
+        text.AppendLine("MatchingUdpPort=31314");
+        text.AppendLine("WebApiPort=31315");
+        text.AppendLine("StatsEnabled=false");
+        text.AppendLine("Matching2Enabled=true");
+        text.AppendLine("BloodborneSeamlessCoop=" + (options.LanSeamless ? "true" : "false"));
+        text.AppendLine("StatsPort=31320");
+        text.AppendLine("StatsPath=stats");
+        text.AppendLine("StatsCacheLife=30");
+        text.AppendLine("EmailValidated=false");
+        text.AppendLine("AdminsList=");
+        text.AppendLine("RegistrationSecretKey=" + options.LanSecret.Replace("\r", "").Replace("\n", "").Trim());
+        File.WriteAllText(path, text.ToString(), new UTF8Encoding(false));
+    }
+
+    string StartLanServerProcess(LaunchOptions options) {
+        try {
+            if (shadNetProcess != null && !shadNetProcess.HasExited) return null;
+            string directory = Path.Combine(options.Root, "shadp2p", "server");
+            string executable = Path.Combine(directory, "shadnet.exe");
+            if (!File.Exists(executable)) return "没有找到 shadnet.exe，请先安装／更新运行环境。";
+            if (options.LanSecret.Length == 0) return "请填写服务器注册密钥。";
+            Directory.CreateDirectory(directory);
+            WriteShadNetConfig(Path.Combine(directory, "shadnet.cfg"), options);
+            ProcessStartInfo info = new ProcessStartInfo(executable) {
+                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+            if (options.LanSeamless) info.EnvironmentVariables["SHADNET_BLOODBORNE_SEAMLESS_COOP"] = "1";
+            else info.EnvironmentVariables.Remove("SHADNET_BLOODBORNE_SEAMLESS_COOP");
+            Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
+            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+                if (e.Data != null) Log("[shadNet] " + e.Data);
+            };
+            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+                if (e.Data != null) Log("[shadNet] " + e.Data);
+            };
+            process.Exited += delegate {
+                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                    if (IsDisposed) return;
+                    lanStartServerButton.Enabled = !busy;
+                    lanStopServerButton.Enabled = false;
+                    lanStatus.Text = "本机 shadNet 已停止。";
+                });
+            };
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            shadNetProcess = process;
+            BeginInvoke((Action)delegate {
+                lanStartServerButton.Enabled = false;
+                lanStopServerButton.Enabled = true;
+            });
+            Log("本机 shadNet 已启动，监听 TCP 31313、UDP 31314、TCP 31315。");
+            return null;
+        } catch (Exception e) { return e.Message; }
+    }
+
+    void StartLanServerFromUi() {
+        try {
+            LaunchOptions options = CollectLanOnly();
+            string error = StartLanServerProcess(options);
+            if (error != null) { Warn("启动 shadNet 失败：" + error); return; }
+            lanHost.Checked = true;
+            lanStatus.Text = "本机服务器正在启动……";
+        } catch (Exception e) { Warn("启动 shadNet 失败：" + e.Message); }
+    }
+
+    void StopLanServer() {
+        try {
+            if (shadNetProcess != null && !shadNetProcess.HasExited) {
+                shadNetProcess.Kill();
+                shadNetProcess.WaitForExit(3000);
+            }
+        } catch (Exception e) { Log("停止 shadNet 时出现问题：" + e.Message); }
+        shadNetProcess = null;
+        lanStartServerButton.Enabled = !busy;
+        lanStopServerButton.Enabled = false;
+        lanStatus.Text = "本机 shadNet 已停止。";
+    }
+
+    static bool CheckLanStatus(string address, out string message) {
+        string host;
+        int ignoredPort;
+        if (!TryParseLanEndpoint(address, out host, out ignoredPort)) {
+            message = "服务器地址无效。"; return false;
+        }
+        try {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://" + host + ":31315/status");
+            request.Timeout = 4000;
+            request.ReadWriteTimeout = 4000;
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
+                string body = reader.ReadToEnd();
+                bool ok = response.StatusCode == HttpStatusCode.OK && body.IndexOf("\"ok\":true", StringComparison.OrdinalIgnoreCase) >= 0;
+                message = ok ? "服务器在线：" + host + ":31315" : "服务器响应异常：" + body;
+                return ok;
+            }
+        } catch (Exception e) { message = "无法连接服务器：" + e.Message; return false; }
+    }
+
+    void TestLanServerFromUi() {
+        lanTestButton.Enabled = false;
+        lanStatus.Text = "正在检测服务器……";
+        string address = lanAddressBox.Text;
+        Thread worker = new Thread(new ThreadStart(delegate {
+            string message;
+            bool ok = CheckLanStatus(address, out message);
+            BeginInvoke((Action)delegate {
+                lanTestButton.Enabled = !busy;
+                lanStatus.Text = message;
+                lanStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+            });
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    static void WriteVarint(Stream stream, uint value) {
+        while (value >= 0x80) { stream.WriteByte((byte)((value & 0x7F) | 0x80)); value >>= 7; }
+        stream.WriteByte((byte)value);
+    }
+
+    static void WriteProtoString(Stream stream, int field, string value) {
+        if (string.IsNullOrEmpty(value)) return;
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        WriteVarint(stream, (uint)((field << 3) | 2));
+        WriteVarint(stream, (uint)bytes.Length);
+        stream.Write(bytes, 0, bytes.Length);
+    }
+
+    static byte[] ReadExactly(NetworkStream stream, int count) {
+        byte[] data = new byte[count];
+        int offset = 0;
+        while (offset < count) {
+            int read = stream.Read(data, offset, count - offset);
+            if (read <= 0) throw new IOException("服务器提前关闭了连接。");
+            offset += read;
+        }
+        return data;
+    }
+
+    static int ReadInt32LE(byte[] data, int offset) {
+        return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+    }
+
+    static string ShadNetError(byte code) {
+        switch (code) {
+        case 0: return "注册成功。";
+        case 3: return "注册资料无效；请检查 ID、密码和邮箱。";
+        case 10: return "服务端创建账号失败。";
+        case 11: return "此联机 ID 已存在。";
+        case 12: return "此邮箱域名被服务端拒绝。";
+        case 13: return "此邮箱已注册。";
+        case 23: return "注册密钥不正确。";
+        case 24: return "服务端数据库错误。";
+        default: return "服务端返回错误代码 " + code + "。";
+        }
+    }
+
+    static bool RegisterShadNet(LaunchOptions options, out string message) {
+        string host;
+        int port;
+        if (!TryParseLanEndpoint(options.LanAddress, out host, out port)) {
+            message = "服务器地址无效。"; return false;
+        }
+        try {
+            using (TcpClient client = new TcpClient()) {
+                IAsyncResult pending = client.BeginConnect(host, port, null, null);
+                if (!pending.AsyncWaitHandle.WaitOne(5000)) throw new IOException("连接超时。");
+                client.EndConnect(pending);
+                client.ReceiveTimeout = 5000;
+                client.SendTimeout = 5000;
+                using (NetworkStream network = client.GetStream()) {
+                    byte[] serverHeader = ReadExactly(network, 15);
+                    int serverSize = ReadInt32LE(serverHeader, 3);
+                    if (serverHeader[0] != 3 || serverSize < 15) throw new InvalidDataException("不是兼容的 shadNet 服务端。");
+                    byte[] serverPayload = ReadExactly(network, serverSize - 15);
+                    if (serverPayload.Length >= 4 && ReadInt32LE(serverPayload, 0) != 1)
+                        throw new InvalidDataException("客户端与服务端协议版本不匹配。");
+
+                    byte[] protobuf;
+                    using (MemoryStream proto = new MemoryStream()) {
+                        WriteProtoString(proto, 1, options.LanNpid);
+                        WriteProtoString(proto, 2, options.LanPassword);
+                        WriteProtoString(proto, 4, options.LanEmail);
+                        WriteProtoString(proto, 5, options.LanSecret);
+                        protobuf = proto.ToArray();
+                    }
+                    int payloadSize = 4 + protobuf.Length;
+                    int totalSize = 15 + payloadSize;
+                    byte[] packet = new byte[totalSize];
+                    packet[0] = 0;
+                    packet[1] = 2;
+                    packet[2] = 0;
+                    Buffer.BlockCopy(BitConverter.GetBytes(totalSize), 0, packet, 3, 4);
+                    Buffer.BlockCopy(BitConverter.GetBytes((ulong)1), 0, packet, 7, 8);
+                    Buffer.BlockCopy(BitConverter.GetBytes(protobuf.Length), 0, packet, 15, 4);
+                    Buffer.BlockCopy(protobuf, 0, packet, 19, protobuf.Length);
+                    network.Write(packet, 0, packet.Length);
+                    byte[] replyHeader = ReadExactly(network, 15);
+                    int replySize = ReadInt32LE(replyHeader, 3);
+                    if (replyHeader[0] != 1 || replySize < 16) throw new InvalidDataException("服务端注册响应格式错误。");
+                    byte[] reply = ReadExactly(network, replySize - 15);
+                    message = ShadNetError(reply[0]);
+                    return reply[0] == 0;
+                }
+            }
+        } catch (Exception e) { message = "注册失败：" + e.Message; return false; }
+    }
+
+    void RegisterLanAccountFromUi() {
+        LaunchOptions options;
+        try { options = CollectLanOnly(); }
+        catch (Exception e) { Warn("联机设置无效：" + e.Message); return; }
+        if (!Regex.IsMatch(options.LanNpid, @"^[A-Za-z0-9_-]{3,16}$") ||
+            options.LanPassword.Length == 0 || options.LanEmail.IndexOf('@') <= 0) {
+            Warn("请填写有效的 3–16 位联机 ID、密码和邮箱。"); return;
+        }
+        lanRegisterButton.Enabled = false;
+        lanStatus.Text = "正在注册账号……";
+        Thread worker = new Thread(new ThreadStart(delegate {
+            string message;
+            bool ok = RegisterShadNet(options, out message);
+            BeginInvoke((Action)delegate {
+                lanRegisterButton.Enabled = !busy;
+                lanStatus.Text = message;
+                lanStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                if (ok) statusLabel.Text = "shadNet 账号已注册，请保存设置后启动局域网游戏。";
+            });
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
     static string Default(string key) { return Get(Defaults, key, ""); }
     static string DefaultResolution() {
         Rectangle screen = Screen.PrimaryScreen.Bounds;
@@ -1152,6 +1666,14 @@ sealed class MainForm : Form {
         options.Root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
         options.Game = Path.GetFullPath(gameBox.Text.Trim().Trim('"'));
         options.SaveRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"'));
+        options.LanMode = Value(coreMode) == "shadp2p";
+        options.LanHost = lanHost.Checked;
+        options.LanSeamless = lanSeamless.Checked;
+        options.LanAddress = lanAddressBox.Text.Trim();
+        options.LanNpid = lanNpidBox.Text.Trim();
+        options.LanPassword = lanPasswordBox.Text;
+        options.LanEmail = lanEmailBox.Text.Trim();
+        options.LanSecret = lanSecretBox.Text;
         options.AutoBackup = autoBackup.Checked;
         options.DesktopLink = desktopLink.Checked;
         options.StartMenuLink = startMenuLink.Checked;
@@ -1204,10 +1726,13 @@ sealed class MainForm : Form {
         if (Path.GetPathRoot(playerRoot).Equals(playerRoot, StringComparison.OrdinalIgnoreCase)) {
             Warn("请不要把玩家数据直接放在磁盘根目录。"); return false;
         }
-        if (requireInstalled && !File.Exists(Path.Combine(root, "out", "bb-probe.exe"))) {
+        bool lanMode = Value(coreMode) == "shadp2p";
+        string requiredCore = lanMode ? Path.Combine(root, "shadp2p", "client", "shadPS4.exe") :
+            Path.Combine(root, "out", "bb-probe.exe");
+        if (requireInstalled && !File.Exists(requiredCore)) {
             Warn("运行环境尚未安装，请先点击“安装 / 更新运行环境”。"); return false;
         }
-        if (requireInstalled) {
+        if (requireInstalled && !lanMode) {
             string expected = ExpectedProbeHash();
             string installed = FileSha256(Path.Combine(root, "out", "bb-probe.exe"));
             if (expected.Length == 0 || !installed.Equals(expected, StringComparison.OrdinalIgnoreCase)) {
@@ -1217,6 +1742,17 @@ sealed class MainForm : Form {
                      "\r\n所需核心：" + (expected.Length > 12 ? expected.Substring(0, 12) : "无法读取"));
                 return false;
             }
+        }
+        if (lanMode) {
+            string host;
+            int port;
+            if (!TryParseLanEndpoint(lanAddressBox.Text, out host, out port)) {
+                Warn("局域网服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
+            }
+            if (!Regex.IsMatch(lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
+                Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
+            }
+            if (lanPasswordBox.Text.Length == 0) { Warn("请输入联机账号密码。"); return false; }
         }
         return true;
     }
@@ -1256,7 +1792,9 @@ sealed class MainForm : Form {
 
     string SaveRootPath() {
         string value = saveRootBox.Text.Trim().Trim('"');
-        return value.Length == 0 ? SaveTools.DefaultRoot : Path.GetFullPath(value);
+        string root = value.Length == 0 ? SaveTools.DefaultRoot : Path.GetFullPath(value);
+        return coreMode != null && Value(coreMode) == "shadp2p" ?
+            Path.Combine(root, "shadp2p-home", "1000") : root;
     }
 
     void RefreshSaveManager() {
@@ -1543,6 +2081,14 @@ sealed class MainForm : Form {
         state["game_dir"] = options.Game;
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
+        state["core_mode"] = options.LanMode ? "shadp2p" : "native";
+        state["lan_address"] = options.LanAddress;
+        state["lan_npid"] = options.LanNpid;
+        state["lan_password_dpapi"] = ProtectSecret(options.LanPassword);
+        state["lan_email"] = options.LanEmail;
+        state["lan_secret_dpapi"] = ProtectSecret(options.LanSecret);
+        state["lan_host"] = options.LanHost ? "1" : "0";
+        state["lan_seamless"] = options.LanSeamless ? "1" : "0";
         state["quality_profile"] = Value(qualityProfile);
         state["fps"] = options.Env["BB_FPS"];
         state["language"] = options.Env["BB_LANGUAGE"];
@@ -1556,6 +2102,8 @@ sealed class MainForm : Form {
             state["cheat_" + definition[0]] = cheats[definition[0]].Checked ? "1" : "0";
         Directory.CreateDirectory(Path.GetDirectoryName(stateFile));
         WriteSimple(stateFile, state);
+        if (options.LanMode && File.Exists(Path.Combine(options.Root, "shadp2p", "client", "shadPS4.exe")))
+            ConfigureLanClient(options);
         Log("设置已保存：" + Path.Combine(options.Root, "bbport.ini"));
     }
 
@@ -1627,8 +2175,25 @@ sealed class MainForm : Form {
     void StartGame() {
         if (!CheckInputs(true)) return;
         LaunchOptions options = Collect();
-        try { MigrateLegacySaveIfNeeded(options); Configure(options, false); }
+        if (options.LanMode) {
+            string titleId = SaveTools.ReadTitleId(options.Game);
+            if (!titleId.Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
+                string shown = titleId.Length == 0 ? "无法识别" : titleId;
+                if (MessageBox.Show(this, "当前游戏区域为“" + shown + "”。\r\n\r\n" +
+                    "shadp2p 官方目前只确认 CUSA03173 1.09 可联机；其他区域可能无法登录、匹配或进入游戏。仍要继续吗？",
+                    "shadp2p 兼容性提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    return;
+            }
+        }
+        try {
+            if (!options.LanMode) MigrateLegacySaveIfNeeded(options);
+            Configure(options, false);
+        }
         catch (Exception e) { Warn("保存设置失败：" + e.Message); return; }
+        if (options.LanMode) {
+            StartLanGame(options);
+            return;
+        }
         string python = Path.Combine(options.Root, "python", "python.exe");
         string script = Path.Combine(options.Root, "scripts", "run_game.py");
         if (!File.Exists(python) || !File.Exists(script)) { Warn("运行环境不完整，请重新点击“安装 / 更新运行环境”。"); return; }
@@ -1642,6 +2207,101 @@ sealed class MainForm : Form {
         Thread worker = new Thread(new ThreadStart(delegate { RunGame(options, python, script); }));
         worker.IsBackground = true;
         worker.Start();
+    }
+
+    void StartLanGame(LaunchOptions options) {
+        string core = Path.Combine(options.Root, "shadp2p", "client", "shadPS4.exe");
+        if (!File.Exists(core)) { Warn("shadp2p 核心不完整，请重新点击“安装 / 更新运行环境”。"); return; }
+        busy = true;
+        UpdateButtons();
+        tabs.SelectedTab = logPage;
+        progress.Style = ProgressBarStyle.Marquee;
+        statusLabel.Text = "正在准备并启动局域网游戏……";
+        Log("");
+        Log("正在使用 shadp2p 启动游戏：" + options.Game);
+        Thread worker = new Thread(new ThreadStart(delegate { RunLanGame(options, core); }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void RunLanGame(LaunchOptions options, string core) {
+        string error = null;
+        int exitCode = -1;
+        string logPath = null;
+        List<string> recent = new List<string>();
+        object outputLock = new object();
+        StreamWriter runLog = null;
+        try {
+            ConfigureLanClient(options);
+            if (options.LanHost) {
+                string serverError = StartLanServerProcess(options);
+                if (serverError != null) throw new InvalidOperationException("本机 shadNet 启动失败：" + serverError);
+            }
+            string statusMessage = "";
+            bool online = false;
+            for (int attempt = 0; attempt < (options.LanHost ? 10 : 1); ++attempt) {
+                if (CheckLanStatus(options.LanAddress, out statusMessage)) { online = true; break; }
+                if (options.LanHost) Thread.Sleep(500);
+            }
+            if (!online) throw new IOException(statusMessage + " 请检查服务器、防火墙和局域网地址。");
+
+            string playerRoot = LanPlayerRoot(options);
+            Directory.CreateDirectory(playerRoot);
+            if (options.AutoBackup) {
+                string backup = SaveTools.CreateBackup(playerRoot, "auto-lan-before");
+                if (backup != null) Log("局域网启动前存档备份：" + backup);
+                SaveTools.PruneAutomaticBackups(playerRoot, 20);
+            }
+            string logDirectory = Path.Combine(options.Root, "logs");
+            Directory.CreateDirectory(logDirectory);
+            logPath = Path.Combine(logDirectory, "lan-run-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".log");
+            runLog = new StreamWriter(logPath, false, new UTF8Encoding(false));
+            runLog.AutoFlush = true;
+            lastRunLog = logPath;
+            Action<string> capture = delegate(string line) {
+                if (line == null) return;
+                lock (outputLock) {
+                    runLog.WriteLine(line);
+                    recent.Add(line);
+                    if (recent.Count > 240) recent.RemoveAt(0);
+                }
+                Log(line);
+            };
+            capture("Bloodborne PC shadp2p LAN launch log " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+            capture("Core: " + core);
+            capture("Game: " + options.Game);
+            capture("Server: " + options.LanAddress);
+            capture("NPID: " + options.LanNpid);
+            capture("LAN player data: " + playerRoot);
+            ProcessStartInfo info = new ProcessStartInfo(core,
+                "--game \"" + Path.Combine(options.Game, "eboot.bin") + "\" --user-id 1000") {
+                UseShellExecute = false, CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(core), RedirectStandardOutput = true,
+                RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8 };
+            if (options.LanSeamless) info.EnvironmentVariables["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] = "1";
+            else info.EnvironmentVariables.Remove("SHADPS4_BLOODBORNE_SEAMLESS_COOP");
+            using (Process process = new Process { StartInfo = info }) {
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) capture(e.Data); };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) capture(e.Data); };
+                process.Start();
+                launcherProcess = process;
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                process.WaitForExit();
+                process.WaitForExit();
+                exitCode = process.ExitCode;
+                launcherProcess = null;
+            }
+            if (options.AutoBackup) {
+                string backup = SaveTools.CreateBackup(playerRoot, "auto-lan-after");
+                if (backup != null) Log("局域网退出后存档备份：" + backup);
+                SaveTools.PruneAutomaticBackups(playerRoot, 20);
+            }
+        } catch (Exception e) { error = e.Message; Log("shadp2p 启动失败：" + e); }
+        finally { if (runLog != null) { lock (outputLock) runLog.Dispose(); } }
+        string diagnostic = CrashDiagnostic(recent);
+        BeginInvoke((Action)delegate { GameFinished(error, exitCode, logPath, diagnostic); });
     }
 
     void RunGame(LaunchOptions options, string python, string script) {
@@ -1777,6 +2437,12 @@ sealed class MainForm : Form {
         installButton.Enabled = !busy;
         saveButton.Enabled = !busy;
         playButton.Enabled = !busy;
+        if (lanStartServerButton != null)
+            lanStartServerButton.Enabled = !busy && (shadNetProcess == null || shadNetProcess.HasExited);
+        if (lanStopServerButton != null)
+            lanStopServerButton.Enabled = !busy && shadNetProcess != null && !shadNetProcess.HasExited;
+        if (lanTestButton != null) lanTestButton.Enabled = !busy;
+        if (lanRegisterButton != null) lanRegisterButton.Enabled = !busy;
         if (backupButton != null) backupButton.Enabled = !busy;
         if (restoreButton != null) restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0;
         if (importFolderButton != null) importFolderButton.Enabled = !busy;
@@ -1787,9 +2453,21 @@ sealed class MainForm : Form {
             renameCharacterButton.Enabled = !busy && characterList.SelectedItems.Count > 0;
     }
     void OnClosing(object sender, FormClosingEventArgs e) {
-        if (!busy || launcherProcess == null) return;
-        if (MessageBox.Show(this, "游戏启动器仍在运行。关闭窗口不会强制结束游戏，确定关闭吗？", TitleText,
-            MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) e.Cancel = true;
+        if (busy && launcherProcess != null &&
+            MessageBox.Show(this, "游戏核心仍在运行。关闭窗口不会强制结束游戏，确定关闭吗？", TitleText,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) {
+            e.Cancel = true;
+            return;
+        }
+        if (shadNetProcess != null && !shadNetProcess.HasExited) {
+            if (MessageBox.Show(this, "本机 shadNet 服务器仍在运行。关闭启动器时同时停止服务器吗？", TitleText,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                StopLanServer();
+            else {
+                e.Cancel = true;
+                return;
+            }
+        }
     }
 }
 

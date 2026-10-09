@@ -26,6 +26,7 @@ echo [2/2] 正在生成单文件 EXE……
 "%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 ^
     /out:"%ROOT%dist\Bloodborne-PC-中文启动器.exe" ^
     /r:System.Windows.Forms.dll /r:System.Drawing.dll ^
+    /r:System.Security.dll /r:System.Web.Extensions.dll ^
     /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll ^
     /resource:"%ROOT%packaging\windows-portable-payload.zip",bbport_payload.zip ^
     /resource:"%ROOT%scripts\bbport_settings_table.inc",bbport_settings_table.inc ^

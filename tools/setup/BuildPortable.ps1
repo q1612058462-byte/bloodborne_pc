@@ -81,6 +81,22 @@ Get-ChildItem -LiteralPath (Join-Path $rootPath 'scripts') -Filter '*.py' -File 
 }
 Copy-RequiredTree (Join-Path $rootPath 'patches') (Join-Path $stage 'patches')
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'LICENSE-bbport.txt')
+Copy-RequiredFile (Join-Path $rootPath 'local_deps\shadp2p\client\shadPS4.exe') (Join-Path $stage 'shadp2p\client\shadPS4.exe')
+$shadnetSource = Join-Path $rootPath 'local_deps\shadp2p\server'
+$shadnetStage = Join-Path $stage 'shadp2p\server'
+foreach ($relative in @(
+    'icuuc.dll', 'Qt6Core.dll', 'Qt6HttpServer.dll', 'Qt6Network.dll', 'Qt6Sql.dll',
+    'Qt6WebSockets.dll', 'shadnet.exe', 'vc_redist.x64.exe',
+    'networkinformation\qnetworklistmanager.dll',
+    'sqldrivers\qsqlibase.dll', 'sqldrivers\qsqlite.dll', 'sqldrivers\qsqlmimer.dll',
+    'sqldrivers\qsqloci.dll', 'sqldrivers\qsqlodbc.dll', 'sqldrivers\qsqlpsql.dll',
+    'tls\qcertonlybackend.dll', 'tls\qschannelbackend.dll'
+)) {
+    Copy-RequiredFile (Join-Path $shadnetSource $relative) (Join-Path $shadnetStage $relative)
+}
+Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\client\LICENSE-GPL-2.0.txt')
+Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\server\LICENSE-GPL-2.0.txt')
+Copy-RequiredFile (Join-Path $packaging 'SHADP2P_THIRD_PARTY.txt') (Join-Path $stage 'shadp2p\THIRD_PARTY.txt')
 Copy-RequiredFile (Join-Path $packaging 'APP_VERSION.txt') (Join-Path $stage 'APP_VERSION.txt')
 Copy-RequiredFile (Join-Path $packaging 'RELEASE_NOTES_zh-CN.txt') (Join-Path $stage 'RELEASE_NOTES_zh-CN.txt')
 
@@ -114,6 +130,7 @@ $buildInfo = @(
     'Local feature: bundled FSR 4 v07 and NVIDIA DLSS models; optional user-provided FSR 4.1.1 assets'
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
+    'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
     ('bb-probe SHA256: ' + $probeHash)
     ('Packaged at: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
 ) -join "`r`n"

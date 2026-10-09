@@ -1,0 +1,23 @@
+shadp2p LAN components
+======================
+
+Client core
+  Project: https://github.com/Wozzardman/shadp2p
+  Source revision: 6e97b404d6f89e7dab58f98c69678b69af9a3c4f
+  Release: Pre-release-shadPS4-2026-08-16-6e97b404d6f89e7dab58f98c69678b69af9a3c4f
+  Windows archive SHA256: A523EC37CF3017449F9546A46BBF8ECF7B5054DA58B0FD9DEA35E82A9D8D4D78
+  License: GPL-2.0-or-later
+
+Server
+  Project: https://github.com/Wozzardman/shadnet-p2p
+  Source revision: 5a849a192fd4450593c57b10697316ac324c856e
+  Release: pre-release-shadnet-2026-08-16-5a849a192fd4450593c57b10697316ac324c856e
+  Windows archive SHA256: 715302BBCB9EA9B5DEBFEE3F47C1391CFB7FC3963BEC6D65470EFFF3F29D43D1
+  License: GPL-2.0-or-later (see the upstream REUSE.toml and file SPDX headers)
+
+The matching client and server releases above must be used together. The currently tested
+Bloodborne target is CUSA03173 version 01.09. These components are experimental and do not
+contain game files, PlayStation firmware, or Sony system modules.
+
+Complete corresponding source code is available at the project URLs and exact revisions above.
+The GPL-2.0 license text is included beside each installed component.
