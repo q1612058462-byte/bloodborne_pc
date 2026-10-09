@@ -1,0 +1,1796 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Bloodborne PC Windows portable installer/launcher.
+// setup.bat compiles this with the .NET Framework 4 C# compiler and embeds the complete runtime.
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.IO.Compression;
+using System.Globalization;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace BbportPortable {
+
+static class Program {
+    [DllImport("user32.dll")]
+    static extern bool SetProcessDPIAware();
+
+    [STAThread]
+    static int Main(string[] args) {
+        string root = null;
+        for (int i = 0; i + 1 < args.Length; ++i)
+            if (args[i] == "--install-root") root = args[++i];
+        try { SetProcessDPIAware(); } catch { }
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.Run(new MainForm(root));
+        return 0;
+    }
+}
+
+sealed class Choice {
+    public readonly string Text;
+    public readonly string Value;
+    public Choice(string text, string value) { Text = text; Value = value; }
+    public override string ToString() { return Text; }
+}
+
+sealed class LaunchOptions {
+    public string Root;
+    public string Game;
+    public string SaveRoot;
+    public bool AutoBackup;
+    public bool DesktopLink;
+    public bool StartMenuLink;
+    public readonly Dictionary<string, string> Ini = new Dictionary<string, string>();
+    public readonly Dictionary<string, string> Env = new Dictionary<string, string>();
+}
+
+sealed class SaveValidation {
+    public string Directory;
+    public string TitleId;
+    public string MetadataDirectory;
+    public int DataFiles;
+    public long Bytes;
+    public DateTime Modified;
+    public string Fingerprint;
+    public readonly Dictionary<int, string> Slots = new Dictionary<int, string>();
+    public string Summary {
+        get {
+            return string.Format("验证通过\r\n区域 ID：{0}\r\n数据文件：{1} 个\r\n总大小：{2:N1} MB\r\n最后修改：{3}\r\n指纹：{4}\r\n来源：{5}",
+                TitleId.Length == 0 ? "未识别（导入时使用当前游戏 ID）" : TitleId, DataFiles,
+                Bytes / 1048576.0, Modified.ToString("yyyy-MM-dd HH:mm:ss"), Fingerprint, Directory);
+        }
+    }
+}
+
+sealed class SaveCharacter {
+    public int Index;
+    public string File;
+    public string Name;
+    public DateTime Modified;
+}
+
+static class SaveTools {
+    static readonly HashSet<string> BloodborneIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+        "CUSA00207", "CUSA00208", "CUSA00299", "CUSA00900", "CUSA01363", "CUSA03014",
+        "CUSA03023", "CUSA03173"
+    };
+
+    public static string DefaultRoot {
+        get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                  "BloodbornePC", "PlayerData"); }
+    }
+    public static string BackupRoot(string userRoot) { return Path.Combine(userRoot, "backups"); }
+
+    static bool IsSaveDataName(string name, out int index) {
+        index = -1;
+        Match match = Regex.Match(name, @"^userdata[_-]?(\d{1,4})(?:\.(?:bin|sav))?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Groups[1].Value, out index) && index >= 0 && index <= 10;
+    }
+
+    static string CanonicalSaveName(int index) { return "userdata" + index.ToString("D4"); }
+
+    static string FindTitleId(DirectoryInfo directory) {
+        for (DirectoryInfo at = directory; at != null; at = at.Parent)
+            if (at.Name.Length == 9 && at.Name.StartsWith("CUSA", StringComparison.OrdinalIgnoreCase))
+                return at.Name.ToUpperInvariant();
+        return "";
+    }
+
+    public static SaveValidation ValidateDirectory(string directory) {
+        string candidate = LocateSaveDirectory(directory, 0);
+        if (candidate == null)
+            throw new InvalidDataException("没有找到 Bloodborne 存档。请选择包含 userdata0000…userdata0010（也兼容下划线／短横线命名）的 SPRJ0005 文件夹或其上级目录。");
+        Dictionary<int, FileInfo> slots = new Dictionary<int, FileInfo>();
+        foreach (FileInfo file in new DirectoryInfo(candidate).GetFiles()) {
+            int index;
+            if (!IsSaveDataName(file.Name, out index)) continue;
+            long expected = index == 10 ? 262144L : 1310720L;
+            if (file.Length != expected)
+                throw new InvalidDataException(string.Format("{0} 大小异常：应为 {1} 字节，实际为 {2} 字节。",
+                    file.Name, expected, file.Length));
+            FileInfo existing;
+            if (slots.TryGetValue(index, out existing))
+                throw new InvalidDataException(string.Format("存档槽位 {0:D4} 同时存在 {1} 和 {2}，无法判断应使用哪一个。",
+                    index, existing.Name, file.Name));
+            slots[index] = file;
+        }
+        if (slots.Count == 0) throw new InvalidDataException("存档中没有可识别的 userdata 文件。");
+        List<FileInfo> data = new List<FileInfo>(slots.Values);
+        FileInfo newest = data[0];
+        long bytes = 0;
+        foreach (FileInfo file in data) { bytes += file.Length; if (file.LastWriteTime > newest.LastWriteTime) newest = file; }
+        string fingerprint;
+        using (SHA256 sha = SHA256.Create())
+        using (FileStream stream = newest.OpenRead())
+            fingerprint = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").Substring(0, 16);
+        string meta = candidate + ".sce_sys";
+        if (!Directory.Exists(meta)) {
+            string nested = Path.Combine(candidate, "sce_sys");
+            meta = Directory.Exists(nested) ? nested : "";
+        }
+        SaveValidation result = new SaveValidation { Directory = candidate, TitleId = FindTitleId(new DirectoryInfo(candidate)),
+            MetadataDirectory = meta, DataFiles = data.Count, Bytes = bytes,
+            Modified = newest.LastWriteTime, Fingerprint = fingerprint };
+        foreach (KeyValuePair<int, FileInfo> slot in slots) result.Slots[slot.Key] = slot.Value.FullName;
+        return result;
+    }
+
+    static string LocateSaveDirectory(string directory, int depth) {
+        if (!Directory.Exists(directory) || depth > 7) return null;
+        DirectoryInfo current = new DirectoryInfo(directory);
+        int found = 0;
+        foreach (FileInfo file in current.GetFiles()) { int index; if (IsSaveDataName(file.Name, out index)) ++found; }
+        if (found > 0) return current.FullName;
+        foreach (DirectoryInfo child in current.GetDirectories()) {
+            if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            string result = LocateSaveDirectory(child.FullName, depth + 1);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    public static bool HasSave(string userRoot) {
+        try { return LocateSaveDirectory(Path.Combine(userRoot, "savedata"), 0) != null; }
+        catch { return false; }
+    }
+
+    public static void CopyTree(string source, string destination, bool overwrite) {
+        Directory.CreateDirectory(destination);
+        foreach (FileInfo file in new DirectoryInfo(source).GetFiles())
+            file.CopyTo(Path.Combine(destination, file.Name), overwrite);
+        foreach (DirectoryInfo child in new DirectoryInfo(source).GetDirectories()) {
+            if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            CopyTree(child.FullName, Path.Combine(destination, child.Name), overwrite);
+        }
+    }
+
+    static string SafeReason(string reason) {
+        StringBuilder value = new StringBuilder();
+        foreach (char c in reason) if (char.IsLetterOrDigit(c) || c == '-' || c == '_') value.Append(c);
+        return value.Length == 0 ? "manual" : value.ToString();
+    }
+
+    public static string CreateBackup(string userRoot, string reason) {
+        string source = Path.Combine(userRoot, "savedata");
+        if (!Directory.Exists(source) || LocateSaveDirectory(source, 0) == null) return null;
+        string backups = BackupRoot(userRoot);
+        Directory.CreateDirectory(backups);
+        string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
+        string path = Path.Combine(backups, SafeReason(reason) + "-" + stamp + ".zip");
+        string temporary = path + ".tmp";
+        using (FileStream file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        using (ZipArchive archive = new ZipArchive(file, ZipArchiveMode.Create)) {
+            string root = Path.GetFullPath(userRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (string item in Directory.GetFiles(source, "*", SearchOption.AllDirectories)) {
+                string full = Path.GetFullPath(item);
+                string relative = full.Substring(root.Length).Replace(Path.DirectorySeparatorChar, '/');
+                ZipArchiveEntry entry = archive.CreateEntry(relative, CompressionLevel.Optimal);
+                using (Stream input = File.OpenRead(full)) using (Stream output = entry.Open()) input.CopyTo(output);
+            }
+        }
+        File.Move(temporary, path);
+        return path;
+    }
+
+    public static void PruneAutomaticBackups(string userRoot, int keep) {
+        string directory = BackupRoot(userRoot);
+        if (!Directory.Exists(directory)) return;
+        List<FileInfo> files = new List<FileInfo>(new DirectoryInfo(directory).GetFiles("auto-*.zip"));
+        files.Sort(delegate(FileInfo a, FileInfo b) { return b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc); });
+        for (int i = keep; i < files.Count; ++i) files[i].Delete();
+    }
+
+    public static string ExtractZipSafely(string zipPath, string parent) {
+        string target = Path.Combine(parent, "save-import-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(target);
+        string root = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        using (ZipArchive archive = ZipFile.OpenRead(zipPath)) {
+            foreach (ZipArchiveEntry entry in archive.Entries) {
+                string destination = Path.GetFullPath(Path.Combine(target, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!destination.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("ZIP 中包含不安全路径：" + entry.FullName);
+                if (entry.Name.Length == 0) { Directory.CreateDirectory(destination); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                using (Stream input = entry.Open())
+                using (FileStream output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None))
+                    input.CopyTo(output);
+            }
+        }
+        return target;
+    }
+
+    public static void ImportSave(SaveValidation source, string userRoot, string targetTitle) {
+        if (!BloodborneIds.Contains(targetTitle))
+            throw new InvalidDataException("当前游戏区域 ID 无效：" + targetTitle);
+        string titleRoot = Path.Combine(userRoot, "savedata", "1", targetTitle);
+        string target = Path.Combine(titleRoot, "SPRJ0005");
+        string targetMeta = target + ".sce_sys";
+        string token = Guid.NewGuid().ToString("N");
+        string staged = target + ".import-" + token, stagedMeta = staged + ".sce_sys";
+        string rollback = target + ".rollback-" + token, rollbackMeta = rollback + ".sce_sys";
+        Directory.CreateDirectory(titleRoot);
+        CopyTree(source.Directory, staged, true);
+        // Other launchers sometimes use userdata_0000, userdata-0000 or userdata0000.bin.
+        // The game itself expects the canonical userdata0000 spelling, so normalise only the
+        // validated slot files and leave unrelated metadata untouched.
+        foreach (KeyValuePair<int, string> slot in source.Slots) {
+            string canonical = Path.Combine(staged, CanonicalSaveName(slot.Key));
+            File.Copy(slot.Value, canonical, true);
+        }
+        foreach (FileInfo file in new DirectoryInfo(staged).GetFiles()) {
+            int index;
+            if (IsSaveDataName(file.Name, out index) &&
+                !file.Name.Equals(CanonicalSaveName(index), StringComparison.OrdinalIgnoreCase)) file.Delete();
+        }
+        if (source.MetadataDirectory.Length > 0) CopyTree(source.MetadataDirectory, stagedMeta, true);
+        ValidateDirectory(staged);
+        try {
+            if (Directory.Exists(target)) Directory.Move(target, rollback);
+            if (Directory.Exists(targetMeta)) Directory.Move(targetMeta, rollbackMeta);
+            Directory.Move(staged, target);
+            if (Directory.Exists(stagedMeta)) Directory.Move(stagedMeta, targetMeta);
+            if (Directory.Exists(rollback)) Directory.Delete(rollback, true);
+            if (Directory.Exists(rollbackMeta)) Directory.Delete(rollbackMeta, true);
+        } catch {
+            if (Directory.Exists(target)) Directory.Delete(target, true);
+            if (Directory.Exists(targetMeta)) Directory.Delete(targetMeta, true);
+            if (Directory.Exists(rollback)) Directory.Move(rollback, target);
+            if (Directory.Exists(rollbackMeta)) Directory.Move(rollbackMeta, targetMeta);
+            throw;
+        } finally {
+            if (Directory.Exists(staged)) Directory.Delete(staged, true);
+            if (Directory.Exists(stagedMeta)) Directory.Delete(stagedMeta, true);
+        }
+    }
+
+    public static void RestoreBackup(string zipPath, string userRoot) {
+        Directory.CreateDirectory(userRoot);
+        string extracted = ExtractZipSafely(zipPath, userRoot);
+        string staged = Path.Combine(extracted, "savedata");
+        if (!Directory.Exists(staged)) staged = Path.GetDirectoryName(ValidateDirectory(extracted).Directory);
+        ValidateDirectory(staged);
+        string current = Path.Combine(userRoot, "savedata");
+        string rollback = Path.Combine(userRoot, "savedata-rollback-" + Guid.NewGuid().ToString("N"));
+        try {
+            if (Directory.Exists(current)) Directory.Move(current, rollback);
+            Directory.Move(staged, current);
+            if (Directory.Exists(rollback)) Directory.Delete(rollback, true);
+        } catch {
+            if (!Directory.Exists(current) && Directory.Exists(rollback)) Directory.Move(rollback, current);
+            throw;
+        } finally { if (Directory.Exists(extracted)) Directory.Delete(extracted, true); }
+    }
+
+    public static string ReadTitleId(string game) {
+        try {
+            byte[] data = File.ReadAllBytes(Path.Combine(game, "sce_sys", "param.sfo"));
+            if (data.Length < 20 || data[1] != 0x50 || data[2] != 0x53 || data[3] != 0x46) return "";
+            int keys = BitConverter.ToInt32(data, 8), values = BitConverter.ToInt32(data, 12);
+            int count = BitConverter.ToInt32(data, 16);
+            for (int i = 0; i < count; ++i) {
+                int entry = 20 + i * 16;
+                int keyAt = keys + BitConverter.ToUInt16(data, entry);
+                int valueAt = values + BitConverter.ToInt32(data, entry + 12);
+                string key = ReadZeroString(data, keyAt);
+                if (key == "INSTALL_DIR_SAVEDATA" || key == "TITLE_ID") {
+                    string id = ReadZeroString(data, valueAt).ToUpperInvariant();
+                    if (BloodborneIds.Contains(id)) return id;
+                }
+            }
+        } catch { }
+        return "";
+    }
+
+    static string ReadZeroString(byte[] data, int offset) {
+        if (offset < 0 || offset >= data.Length) return "";
+        int end = offset;
+        while (end < data.Length && data[end] != 0) ++end;
+        return Encoding.UTF8.GetString(data, offset, end - offset);
+    }
+
+    static int FindUsernameOffset(byte[] data) {
+        // Bloodborne save editor derives the character block from the first FACE marker:
+        // inventory = FACE + 4 - 4 - 34028; username = inventory - 469.
+        for (int face = Math.Min(0xF000, Math.Max(0, data.Length - 4)); face + 4 <= data.Length; ++face) {
+            if (data[face] != (byte)'F' || data[face + 1] != (byte)'A' ||
+                data[face + 2] != (byte)'C' || data[face + 3] != (byte)'E') continue;
+            int username = face - 34028 - 469;
+            if (username >= 0 && username + 33 <= data.Length) return username;
+        }
+        return -1;
+    }
+
+    static string ReadCharacterName(string path) {
+        byte[] data = File.ReadAllBytes(path);
+        int username = FindUsernameOffset(data);
+        if (username < 0) return null;
+        StringBuilder value = new StringBuilder(16);
+        for (int i = 0; i < 16; ++i) {
+            byte c = data[username + 1 + i * 2];
+            if (c == 0) break;
+            if (c < 0x20 || c > 0x7e) return null;
+            value.Append((char)c);
+        }
+        return value.Length == 0 ? null : value.ToString();
+    }
+
+    public static List<SaveCharacter> ListCharacters(string userRoot) {
+        SaveValidation save = ValidateDirectory(Path.Combine(userRoot, "savedata"));
+        List<SaveCharacter> result = new List<SaveCharacter>();
+        foreach (KeyValuePair<int, string> slot in save.Slots) {
+            if (slot.Key == 10) continue;
+            string name = ReadCharacterName(slot.Value);
+            if (name == null) continue;
+            FileInfo file = new FileInfo(slot.Value);
+            result.Add(new SaveCharacter { Index = slot.Key, File = slot.Value, Name = name,
+                Modified = file.LastWriteTime });
+        }
+        result.Sort(delegate(SaveCharacter a, SaveCharacter b) { return a.Index.CompareTo(b.Index); });
+        return result;
+    }
+
+    public static void RenameCharacter(SaveCharacter character, string newName) {
+        if (character == null || !File.Exists(character.File)) throw new FileNotFoundException("角色存档不存在。");
+        if (newName == null || newName.Length < 1 || newName.Length > 16 ||
+            !Regex.IsMatch(newName, @"^[\x20-\x7E]+$"))
+            throw new InvalidDataException("角色名必须是 1–16 个英文字符、数字或英文符号。");
+        byte[] data = File.ReadAllBytes(character.File);
+        int username = FindUsernameOffset(data);
+        if (username < 0) throw new InvalidDataException("无法定位角色名；文件可能不是已解密的 Bloodborne 角色存档。");
+        byte[] name = Encoding.ASCII.GetBytes(newName);
+        for (int i = 0; i < 16; ++i) data[username + 1 + i * 2] = i < name.Length ? name[i] : (byte)0;
+        string temporary = character.File + ".rename-" + Guid.NewGuid().ToString("N") + ".tmp";
+        string recovery = character.File + ".before-rename";
+        File.WriteAllBytes(temporary, data);
+        try {
+            if (File.Exists(recovery)) File.Delete(recovery);
+            try { File.Replace(temporary, character.File, recovery, true); }
+            catch (IOException) {
+                // Some removable/network/compatibility filesystems do not implement ReplaceFile.
+                // Keep the recovery copy first, then overwrite the original from the validated temp.
+                File.Copy(character.File, recovery, true);
+                File.Copy(temporary, character.File, true);
+            }
+        } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        if (!string.Equals(ReadCharacterName(character.File), newName, StringComparison.Ordinal)) {
+            if (File.Exists(recovery)) File.Copy(recovery, character.File, true);
+            throw new InvalidDataException("写入后校验失败；原文件副本保存在 " + recovery);
+        }
+    }
+}
+
+sealed class MainForm : Form {
+    const string TitleText = "Bloodborne PC 中文安装与启动器";
+    const string PayloadResource = "bbport_payload.zip";
+    const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
+    static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
+    static readonly string ReleaseNotes = PayloadText("RELEASE_NOTES_zh-CN.txt").Trim();
+
+    static readonly Choice[] Resolutions = {
+        new Choice("1280 × 720", "1280x720"), new Choice("1920 × 1080", "1920x1080"),
+        new Choice("2560 × 1440", "2560x1440"), new Choice("3840 × 2160", "3840x2160") };
+    static readonly Choice[] FrameRates = {
+        new Choice("不限制（跟随显示器）", "uncap"), new Choice("90 FPS", "90"),
+        new Choice("60 FPS", "60"), new Choice("30 FPS（原版）", "30") };
+    static readonly Choice[] Upscalers = {
+        new Choice("FSR 3.1（通用，已内置）", "fsr3"),
+        new Choice("FSR 4 v07 INT8（AMD／Intel，模型已内置）", "fsr4"),
+        new Choice("FSR 4.1.1 INT8（需自备提取模型）", "fsr411"),
+        new Choice("DLSS（NVIDIA RTX，模型已内置）", "dlss"),
+        new Choice("TAA（原生抗锯齿）", "taa"),
+        new Choice("关闭", "off") };
+    static readonly Choice[] Presets = {
+        new Choice("原生抗锯齿（1.0×）", "0"), new Choice("质量（1.5×）", "1"),
+        new Choice("平衡（1.7×）", "2"), new Choice("性能（2.0×）", "3"),
+        new Choice("超高性能（3.0×）", "4") };
+    static readonly Choice[] LiveModes = {
+        new Choice("关闭（速度更快）", "0"), new Choice("自动（按显卡判断）", "auto"),
+        new Choice("开启", "1") };
+    static readonly Choice[] ModelDetail = {
+        new Choice("最高（-2）", "-2"), new Choice("游戏默认", "0"),
+        new Choice("较低（1）", "1"), new Choice("最低（2）", "2") };
+    static readonly Choice[] Languages = {
+        new Choice("英语", "1"), new Choice("法语", "2"), new Choice("西班牙语", "3"),
+        new Choice("德语", "4"), new Choice("意大利语", "5"), new Choice("俄语", "8"),
+        new Choice("日语", "0") };
+    static readonly Choice[] PresentModes = {
+        new Choice("Mailbox（默认）", ""), new Choice("FIFO（垂直同步）", "Fifo"),
+        new Choice("FIFO Relaxed", "FifoRelaxed"), new Choice("Immediate（允许撕裂）", "Immediate") };
+    static readonly Choice[] QualityProfiles = {
+        new Choice("极低（720p／性能优先）", "verylow"), new Choice("低（1080p／较低画质）", "low"),
+        new Choice("中（1080p／均衡）", "medium"), new Choice("高（1440p／质量优先）", "high") };
+    static readonly string[][] CheatDefinitions = {
+        new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
+        new string[] { "infinite_echoes", "无限血之回响（固定为 666,666,666）", "Trainer Infinite Echoes (CUSA03173 1.09)", "experimental" },
+        new string[] { "upgrade_materials", "随意强化武器（材料／物品不减并变为最大）", "Trainer Upgrade Materials (CUSA03173 1.09)", "experimental" },
+        new string[] { "no_dead", "不死：生命不会低于 1", "Player No Dead (Read note)", "safe" },
+        new string[] { "stealth", "隐身：敌人不会主动发现你", "Player Stealth (Read note)", "safe" },
+        new string[] { "silent", "静音：敌人听不到你的行动", "Player Silent (Read note)", "safe" },
+        new string[] { "no_rally_decay", "斗争值不会自动衰减", "No Rally Decay", "safe" },
+        new string[] { "sensitive_analog", "更灵敏的摇杆跑动阈值", "Sensitive Analog Input (easier to run)", "safe" },
+        new string[] { "ds1_physics", "娱乐物理：尸体可被大幅推动", "DS1-like physics", "experimental" },
+        new string[] { "enemy_control", "敌人控制：R3 控制锁定敌人，L3 返回", "Enemy Control", "experimental" },
+        new string[] { "debug_camera", "调试相机：按住 × 再按 L3 切换模式", "Restore Debug Camera", "experimental" }
+    };
+    static readonly Choice[] KeyChoices = BuildKeyChoices();
+    static readonly Choice[] MouseActions = {
+        new Choice("无", "none"), new Choice("轻攻击 R1", "r1"), new Choice("重攻击 R2", "r2"),
+        new Choice("防御／左手武器 L1", "l1"), new Choice("左手重攻击 L2", "l2"),
+        new Choice("确定／互动 ×", "cross"), new Choice("取消／闪避 ○", "circle"),
+        new Choice("使用物品 □", "square"), new Choice("切换武器 △", "triangle"),
+        new Choice("锁定目标 R3", "r3"), new Choice("蹲下／功能 L3", "l3"),
+        new Choice("Options", "options"), new Choice("触摸板", "touchpad"),
+        new Choice("十字键上", "up"), new Choice("十字键下", "down"),
+        new Choice("十字键左", "left"), new Choice("十字键右", "right") };
+    static readonly Choice[] GamepadActions = {
+        new Choice("无", "none"), new Choice("确定／互动 ×", "cross"),
+        new Choice("取消／闪避 ○", "circle"), new Choice("使用物品 □", "square"),
+        new Choice("切换武器 △", "triangle"), new Choice("L1", "l1"), new Choice("R1", "r1"),
+        new Choice("L2", "l2"), new Choice("R2", "r2"), new Choice("L3", "l3"), new Choice("R3", "r3"),
+        new Choice("Options", "options"), new Choice("姿势菜单（触摸板左侧）", "touch_left"),
+        new Choice("触摸板右侧", "touch_right"), new Choice("触摸板（保留触摸位置）", "touchpad"),
+        new Choice("十字键上", "up"), new Choice("十字键下", "down"),
+        new Choice("十字键左", "left"), new Choice("十字键右", "right") };
+    static readonly string[][] GamepadDefinitions = {
+        new string[] { "SOUTH", "A／×（下方按键）", "cross" },
+        new string[] { "EAST", "B／○（右侧按键）", "circle" },
+        new string[] { "WEST", "X／□（左侧按键）", "square" },
+        new string[] { "NORTH", "Y／△（上方按键）", "triangle" },
+        new string[] { "LEFT_SHOULDER", "LB／L1", "l1" },
+        new string[] { "RIGHT_SHOULDER", "RB／R1", "r1" },
+        new string[] { "LEFT_TRIGGER", "LT／L2", "l2" },
+        new string[] { "RIGHT_TRIGGER", "RT／R2", "r2" },
+        new string[] { "LEFT_STICK", "LS／L3（左摇杆按下）", "l3" },
+        new string[] { "RIGHT_STICK", "RS／R3（右摇杆按下）", "r3" },
+        new string[] { "START", "Menu／Start／Options", "options" },
+        new string[] { "BACK", "View／Select", "touch_left" },
+        new string[] { "TOUCHPAD", "触摸板按下", "touchpad" },
+        new string[] { "DPAD_UP", "十字键上", "up" },
+        new string[] { "DPAD_DOWN", "十字键下", "down" },
+        new string[] { "DPAD_LEFT", "十字键左", "left" },
+        new string[] { "DPAD_RIGHT", "十字键右", "right" }
+    };
+
+    static readonly Dictionary<string, string> Defaults = new Dictionary<string, string>();
+    static readonly string[][] EffectDefinitions = LoadEffects();
+    static readonly Dictionary<string, string> EffectChinese = new Dictionary<string, string> {
+        { "effect_chromatic_aberration", "色差" }, { "effect_dof", "景深（DoF）" },
+        { "effect_motion_blur", "动态模糊" }, { "effect_ssao", "SSAO 环境光遮蔽" },
+        { "effect_game_aa", "游戏原生抗锯齿" }, { "effect_dynamic_shadows", "动态光源阴影" },
+        { "effect_ssr", "SSR 反射（原版游戏没有）" }, { "skip_intro", "启动时跳过片头视频" }
+    };
+
+    static string PayloadText(string name) {
+        try {
+            Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource);
+            if (resource == null) return "";
+            using (resource)
+            using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read)) {
+                foreach (ZipArchiveEntry entry in archive.Entries) {
+                    if (!entry.FullName.Replace('\\', '/').Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                    using (StreamReader reader = new StreamReader(entry.Open(), Encoding.UTF8)) return reader.ReadToEnd();
+                }
+            }
+        } catch { }
+        return "";
+    }
+
+    readonly float scale;
+    readonly string stateFile;
+    TextBox rootBox, gameBox, logBox;
+    Label gameStatus, statusLabel;
+    ComboBox resolution, frameRate, upscaler, preset, live, modelLod, language, presentMode;
+    ComboBox qualityProfile;
+    CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink;
+    CheckBox mouseEnabled, mouseInvert;
+    NumericUpDown mouseSensitivity;
+    ComboBox mouseLeft, mouseRight, mouseMiddle, mouseX1, mouseX2, mouseWheelUp, mouseWheelDown;
+    readonly Dictionary<string, ComboBox> keyBindings = new Dictionary<string, ComboBox>();
+    readonly Dictionary<string, ComboBox> gamepadBindings = new Dictionary<string, ComboBox>();
+    readonly List<KeyValuePair<string, CheckBox>> effects = new List<KeyValuePair<string, CheckBox>>();
+    readonly Dictionary<string, CheckBox> cheats = new Dictionary<string, CheckBox>();
+    TextBox saveRootBox;
+    CheckBox autoBackup;
+    Label saveStatus;
+    ListView backupList;
+    ListView characterList;
+    Button renameCharacterButton;
+    Button backupButton, restoreButton, importFolderButton, importZipButton, exportButton, refreshSaveButton;
+    Button installButton, saveButton, playButton;
+    TabControl tabs;
+    TabPage logPage;
+    ProgressBar progress;
+    volatile bool busy;
+    Process launcherProcess;
+    string lastRunLog;
+    string expectedProbeHash;
+    readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
+    readonly System.Windows.Forms.Timer pump = new System.Windows.Forms.Timer();
+
+    static Choice[] BuildKeyChoices() {
+        List<Choice> keys = new List<Choice>();
+        keys.Add(new Choice("不绑定", "0"));
+        string letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        for (int i = 0; i < letters.Length; ++i) keys.Add(new Choice(letters[i].ToString(), (4 + i).ToString()));
+        for (int i = 1; i <= 9; ++i) keys.Add(new Choice(i.ToString(), (29 + i).ToString()));
+        keys.Add(new Choice("0", "39"));
+        keys.AddRange(new Choice[] {
+            new Choice("Enter", "40"), new Choice("Esc", "41"), new Choice("Backspace", "42"),
+            new Choice("Tab", "43"), new Choice("Space", "44"), new Choice("-", "45"),
+            new Choice("=", "46"), new Choice("[", "47"), new Choice("]", "48"),
+            new Choice("\\", "49"), new Choice("非美式 #", "50"), new Choice(";", "51"),
+            new Choice("'", "52"), new Choice("`", "53"), new Choice(",", "54"),
+            new Choice(".", "55"), new Choice("/", "56"), new Choice("Caps Lock", "57"),
+            new Choice("F1", "58"), new Choice("F2", "59"), new Choice("F3", "60"),
+            new Choice("F4", "61"), new Choice("F5", "62"), new Choice("F6", "63"),
+            new Choice("F7", "64"), new Choice("F8", "65"), new Choice("F9", "66"),
+            new Choice("F10（同时切换鼠标锁定）", "67"), new Choice("F11（同时切换全屏）", "68"),
+            new Choice("F12", "69"), new Choice("Print Screen", "70"),
+            new Choice("Scroll Lock", "71"), new Choice("Pause", "72"),
+            new Choice("Insert", "73"), new Choice("Home", "74"), new Choice("Page Up", "75"),
+            new Choice("Delete", "76"), new Choice("End", "77"), new Choice("Page Down", "78"),
+            new Choice("右方向键", "79"), new Choice("左方向键", "80"),
+            new Choice("下方向键", "81"), new Choice("上方向键", "82"),
+            new Choice("Num Lock", "83"), new Choice("小键盘 /", "84"),
+            new Choice("小键盘 *", "85"), new Choice("小键盘 -", "86"),
+            new Choice("小键盘 +", "87"), new Choice("小键盘 Enter", "88"),
+            new Choice("小键盘 1", "89"), new Choice("小键盘 2", "90"),
+            new Choice("小键盘 3", "91"), new Choice("小键盘 4", "92"),
+            new Choice("小键盘 5", "93"), new Choice("小键盘 6", "94"),
+            new Choice("小键盘 7", "95"), new Choice("小键盘 8", "96"),
+            new Choice("小键盘 9", "97"), new Choice("小键盘 0", "98"),
+            new Choice("小键盘 .", "99"), new Choice("非美式 \\" , "100"),
+            new Choice("Application/Menu", "101"), new Choice("小键盘 =", "103"),
+            new Choice("F13", "104"), new Choice("F14", "105"), new Choice("F15", "106"),
+            new Choice("F16", "107"), new Choice("F17", "108"), new Choice("F18", "109"),
+            new Choice("F19", "110"), new Choice("F20", "111"), new Choice("F21", "112"),
+            new Choice("F22", "113"), new Choice("F23", "114"), new Choice("F24", "115"),
+            new Choice("菜单键", "118"), new Choice("静音", "127"),
+            new Choice("音量加", "128"), new Choice("音量减", "129"),
+            new Choice("左 Ctrl", "224"), new Choice("左 Shift", "225"), new Choice("左 Alt", "226"),
+            new Choice("左 Win", "227"), new Choice("右 Ctrl", "228"),
+            new Choice("右 Shift", "229"), new Choice("右 Alt", "230"), new Choice("右 Win", "231"),
+            new Choice("睡眠", "258"), new Choice("唤醒", "259"),
+            new Choice("媒体播放", "262"), new Choice("媒体暂停", "263"),
+            new Choice("媒体下一首", "267"), new Choice("媒体上一首", "268"),
+            new Choice("媒体停止", "269"), new Choice("媒体播放/暂停", "271"),
+            new Choice("浏览器搜索", "280"), new Choice("浏览器主页", "281"),
+            new Choice("浏览器后退", "282"), new Choice("浏览器前进", "283"),
+            new Choice("浏览器刷新", "285") });
+        return keys.ToArray();
+    }
+
+    static string[][] LoadEffects() {
+        string text = "";
+        Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("bbport_settings_table.inc");
+        if (stream != null) using (stream) using (StreamReader reader = new StreamReader(stream)) text = reader.ReadToEnd();
+        foreach (Match m in Regex.Matches(text, @"^BB_SETTING\(""(\w+)"", ""([^""]*)""\)", RegexOptions.Multiline))
+            Defaults[m.Groups[1].Value] = m.Groups[2].Value;
+        List<string[]> result = new List<string[]>();
+        foreach (Match m in Regex.Matches(text, @"^BB_EFFECT\(""(\w+)"", ""((?:[^""\\]|\\.)*)"", ([01])\)", RegexOptions.Multiline)) {
+            if (!m.Groups[1].Value.StartsWith("debug_"))
+                result.Add(new string[] { m.Groups[1].Value, Regex.Unescape(m.Groups[2].Value), m.Groups[3].Value });
+        }
+        return result.ToArray();
+    }
+
+    public MainForm(string rootArgument) {
+        using (Graphics g = CreateGraphics()) scale = g.DpiX / 96f;
+        string stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BloodbornePC");
+        stateFile = Path.Combine(stateDir, "launcher.ini");
+        Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
+        Font = SystemFonts.MessageBoxFont;
+        StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(S(800), S(730));
+        MinimumSize = new Size(S(680), S(580));
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        BuildUi();
+        LoadSettings(rootArgument);
+        pump.Interval = 100;
+        pump.Tick += delegate { DrainLog(); };
+        pump.Start();
+        FormClosing += OnClosing;
+    }
+
+    static Image LauncherBackground() {
+        try {
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("bbport_launcher_background.png"))
+            using (Image source = stream == null ? null : Image.FromStream(stream))
+                return source == null ? null : new Bitmap(source);
+        } catch { return null; }
+    }
+
+    static bool UpscalerUsesPreset(string value) {
+        return value == "fsr3" || value == "fsr4" || value == "fsr411" || value == "dlss";
+    }
+
+    int S(int value) { return (int)Math.Round(value * scale); }
+
+    void BuildUi() {
+        Image background = LauncherBackground();
+        tabs = new TabControl { Dock = DockStyle.Fill };
+        TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
+        logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
+        tabs.TabPages.Add(settingsPage);
+        tabs.TabPages.Add(inputPage);
+        tabs.TabPages.Add(savePage);
+        tabs.TabPages.Add(cheatPage);
+        tabs.TabPages.Add(versionPage);
+        tabs.TabPages.Add(logPage);
+        if (background != null) {
+            foreach (TabPage page in tabs.TabPages) {
+                page.BackgroundImage = background;
+                page.BackgroundImageLayout = ImageLayout.Stretch;
+            }
+        }
+        TableLayoutPanel column = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        settingsPage.Controls.Add(column);
+
+        TableLayoutPanel folders = Group("位置", 3);
+        rootBox = new TextBox { Dock = DockStyle.Fill };
+        AddRow(folders, "运行环境目录", rootBox, Browse(rootBox, "选择运行环境的安装位置"));
+        AddSpan(folders, Note("程序、运行库、存档、模组和配置保存在这里；不会复制或修改游戏本体。建议至少预留 450 MB。"));
+        gameBox = new TextBox { Dock = DockStyle.Fill };
+        gameBox.TextChanged += delegate { CheckGame(); };
+        AddRow(folders, "游戏本体目录", gameBox, Browse(gameBox, "选择包含 eboot.bin 和 sce_sys 的 Bloodborne v1.09 游戏目录"));
+        gameStatus = Note("");
+        AddSpan(folders, gameStatus);
+        column.Controls.Add(folders.Parent);
+
+        TableLayoutPanel recommended = Group("推荐配置", 2);
+        qualityProfile = Combo(recommended, "方案", QualityProfiles);
+        Button applyProfile = new Button { Text = "应用推荐配置", AutoSize = true };
+        applyProfile.Click += delegate { ApplyQualityProfile(Value(qualityProfile)); };
+        AddSpan(recommended, Flow(applyProfile));
+        AddSpan(recommended, Note("推荐方案会一次设置分辨率、升频质量、模型细节和特效；应用后仍可逐项修改。"));
+        column.Controls.Add(recommended.Parent);
+
+        TableLayoutPanel display = Group("显示", 2);
+        resolution = Combo(display, "输出分辨率", Resolutions);
+        frameRate = Combo(display, "帧率", FrameRates);
+        presentMode = Combo(display, "呈现模式", PresentModes);
+        fullscreen = Check("无边框全屏（游戏中按 F11 切换）");
+        showFps = Check("在画面角落显示 FPS");
+        AddSpan(display, Flow(fullscreen, showFps));
+        column.Controls.Add(display.Parent);
+
+        TableLayoutPanel image = Group("画质", 2);
+        upscaler = Combo(image, "升频方式", Upscalers);
+        upscaler.SelectedIndexChanged += delegate { preset.Enabled = UpscalerUsesPreset(Value(upscaler)); };
+        preset = Combo(image, "质量预设", Presets);
+        live = Combo(image, "实时切换分辨率", LiveModes);
+        modelLod = Combo(image, "模型细节", ModelDetail);
+        sharpen = Check("锐化（RCAS）");
+        AddSpan(image, sharpen);
+        AddSpan(image, Note("关闭实时切换通常性能更好；改变预设或输出分辨率后需要重启游戏。FSR 4 v07 和 DLSS 依赖已随包安装；FSR 4.1.1 因授权限制只能读取用户自行从 AMD DLL 提取的 fsr4_411 模型。"));
+        column.Controls.Add(image.Parent);
+
+        TableLayoutPanel effectGroup = Group("游戏效果", 2);
+        TableLayoutPanel effectGrid = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
+        effectGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        effectGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        foreach (string[] definition in EffectDefinitions) {
+            string label;
+            if (!EffectChinese.TryGetValue(definition[0], out label)) label = definition[1];
+            CheckBox box = Check(label);
+            effects.Add(new KeyValuePair<string, CheckBox>(definition[0], box));
+            effectGrid.Controls.Add(box);
+        }
+        AddSpan(effectGroup, effectGrid);
+        column.Controls.Add(effectGroup.Parent);
+
+        TableLayoutPanel extras = Group("语言与快捷方式", 2);
+        language = Combo(extras, "游戏语言", Languages);
+        desktopLink = Check("创建桌面快捷方式");
+        startMenuLink = Check("创建开始菜单快捷方式");
+        AddSpan(extras, Flow(desktopLink, startMenuLink));
+        AddSpan(extras, Note("启动器界面为中文；当前上游游戏内设置菜单只提供英语和俄语。"));
+        column.Controls.Add(extras.Parent);
+
+        TableLayoutPanel inputColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        inputColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        inputPage.Controls.Add(inputColumn);
+
+        TableLayoutPanel movement = Group("移动与视角键", 2);
+        AddKey(movement, "向前", "MOVE_UP", "26");
+        AddKey(movement, "向后", "MOVE_DOWN", "22");
+        AddKey(movement, "向左", "MOVE_LEFT", "4");
+        AddKey(movement, "向右", "MOVE_RIGHT", "7");
+        AddKey(movement, "视角上", "LOOK_UP", "82");
+        AddKey(movement, "视角下", "LOOK_DOWN", "81");
+        AddKey(movement, "视角左", "LOOK_LEFT", "80");
+        AddKey(movement, "视角右", "LOOK_RIGHT", "79");
+        inputColumn.Controls.Add(movement.Parent);
+
+        TableLayoutPanel actions = Group("动作键", 2);
+        AddKey(actions, "确定／互动 ×", "CROSS", "44");
+        AddKey(actions, "取消／闪避 ○", "CIRCLE", "225");
+        AddKey(actions, "使用物品 □", "SQUARE", "8");
+        AddKey(actions, "切换武器 △", "TRIANGLE", "20");
+        AddKey(actions, "L1", "L1", "30");
+        AddKey(actions, "R1", "R1", "32");
+        AddKey(actions, "L2", "L2", "21");
+        AddKey(actions, "R2", "R2", "9");
+        AddKey(actions, "L3", "L3", "29");
+        AddKey(actions, "R3／锁定目标", "R3", "6");
+        AddKey(actions, "Options", "OPTIONS", "40");
+        AddKey(actions, "十字键上", "DPAD_UP", "12");
+        AddKey(actions, "十字键下", "DPAD_DOWN", "14");
+        AddKey(actions, "十字键左", "DPAD_LEFT", "13");
+        AddKey(actions, "十字键右", "DPAD_RIGHT", "15");
+        AddKey(actions, "Select／姿势菜单（触摸板左侧）", "TOUCH_LEFT", "43");
+        AddKey(actions, "触摸板右侧", "TOUCH_RIGHT", "42");
+        AddSpan(actions, Note("Xbox 的 View／Select、DualShock／DualSense 的触摸板左侧会打开姿势菜单；支持陀螺仪的手柄也会传递动作传感器数据。"));
+        inputColumn.Controls.Add(actions.Parent);
+
+        TableLayoutPanel gamepad = Group("手柄映射", 2);
+        foreach (string[] definition in GamepadDefinitions) AddGamepad(gamepad, definition);
+        Button resetGamepad = new Button { Text = "恢复默认手柄映射", AutoSize = true };
+        resetGamepad.Click += delegate { ResetGamepadMappings(); };
+        AddSpan(gamepad, Flow(resetGamepad));
+        AddSpan(gamepad, Note("支持 Xbox、DualShock／DualSense 和 SDL 兼容手柄。扳机可映射到任意动作；View／Select 默认对应触摸板左侧姿势菜单。改键后保存设置并重新启动游戏。"));
+        inputColumn.Controls.Add(gamepad.Parent);
+
+        TableLayoutPanel mouse = Group("鼠标", 2);
+        mouseEnabled = Check("启用鼠标控制视角并在游戏窗口中锁定指针");
+        mouseInvert = Check("反转鼠标 Y 轴");
+        AddSpan(mouse, Flow(mouseEnabled, mouseInvert));
+        mouseSensitivity = new NumericUpDown { DecimalPlaces = 1, Increment = 0.1M, Minimum = 0.1M,
+            Maximum = 20M, Value = 3M, Width = S(100) };
+        AddRow(mouse, "鼠标灵敏度", mouseSensitivity, null);
+        mouseLeft = Combo(mouse, "鼠标左键", MouseActions);
+        mouseRight = Combo(mouse, "鼠标右键", MouseActions);
+        mouseMiddle = Combo(mouse, "鼠标中键", MouseActions);
+        mouseX1 = Combo(mouse, "鼠标侧键 1", MouseActions);
+        mouseX2 = Combo(mouse, "鼠标侧键 2", MouseActions);
+        mouseWheelUp = Combo(mouse, "滚轮向上", MouseActions);
+        mouseWheelDown = Combo(mouse, "滚轮向下", MouseActions);
+        AddSpan(mouse, Note("F10 可随时释放或重新锁定鼠标；打开游戏内设置菜单、文字输入或切出窗口时也会自动释放。键盘、鼠标和手柄可以同时使用。"));
+        inputColumn.Controls.Add(mouse.Parent);
+
+        TableLayoutPanel saveColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        saveColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        savePage.Controls.Add(saveColumn);
+        TableLayoutPanel saveLocation = Group("独立存档目录", 3);
+        saveRootBox = new TextBox { Dock = DockStyle.Fill };
+        AddRow(saveLocation, "玩家数据目录", saveRootBox, Browse(saveRootBox, "选择独立的玩家数据和存档目录"));
+        autoBackup = Check("启动前和退出后自动备份存档（最多保留 20 份自动备份）");
+        AddSpan(saveLocation, autoBackup);
+        AddSpan(saveLocation, Note("存档不再跟随运行环境目录。首次启动新版时，会把旧运行环境 user 目录中的存档安全复制到这里。"));
+        saveStatus = Note("尚未读取存档。");
+        AddSpan(saveLocation, saveStatus);
+        saveColumn.Controls.Add(saveLocation.Parent);
+
+        TableLayoutPanel characterGroup = Group("角色存档", 2);
+        characterList = new ListView { View = View.Details, FullRowSelect = true, MultiSelect = false,
+            Height = S(145), Dock = DockStyle.Fill };
+        characterList.Columns.Add("槽位", S(70));
+        characterList.Columns.Add("文件", S(170));
+        characterList.Columns.Add("角色名", S(210));
+        characterList.Columns.Add("最后修改", S(160));
+        characterList.SelectedIndexChanged += delegate {
+            renameCharacterButton.Enabled = !busy && characterList.SelectedItems.Count > 0;
+        };
+        AddSpan(characterGroup, characterList);
+        renameCharacterButton = new Button { Text = "修改选中角色名…", AutoSize = true, Enabled = false };
+        renameCharacterButton.Click += delegate { RenameSelectedCharacter(); };
+        AddSpan(characterGroup, Flow(renameCharacterButton));
+        AddSpan(characterGroup, Note("改名前自动生成 ZIP 备份；角色名按游戏格式限制为 1–16 个英文字符。兼容 userdata0000、userdata_0000、userdata-0000 等常见文件名，导入时会自动规范化。"));
+        saveColumn.Controls.Add(characterGroup.Parent);
+
+        TableLayoutPanel saveActions = Group("备份与外部存档", 2);
+        backupList = new ListView { View = View.Details, FullRowSelect = true, MultiSelect = false,
+            Height = S(230), Dock = DockStyle.Fill };
+        backupList.Columns.Add("备份文件", S(360));
+        backupList.Columns.Add("时间", S(150));
+        backupList.Columns.Add("大小", S(100));
+        backupList.SelectedIndexChanged += delegate { restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0; };
+        AddSpan(saveActions, backupList);
+        FlowLayoutPanel saveButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+        refreshSaveButton = new Button { Text = "刷新", AutoSize = true };
+        backupButton = new Button { Text = "立即备份", AutoSize = true };
+        restoreButton = new Button { Text = "恢复选中备份", AutoSize = true, Enabled = false };
+        exportButton = new Button { Text = "导出当前存档…", AutoSize = true };
+        importFolderButton = new Button { Text = "验证／导入外部文件夹…", AutoSize = true };
+        importZipButton = new Button { Text = "验证／导入 ZIP…", AutoSize = true };
+        refreshSaveButton.Click += delegate { RefreshSaveManager(); };
+        backupButton.Click += delegate { ManualBackup(); };
+        restoreButton.Click += delegate { RestoreSelectedBackup(); };
+        exportButton.Click += delegate { ExportCurrentSave(); };
+        importFolderButton.Click += delegate { ImportExternalFolder(); };
+        importZipButton.Click += delegate { ImportExternalZip(); };
+        saveButtons.Controls.AddRange(new Control[] { refreshSaveButton, backupButton, restoreButton, exportButton,
+            importFolderButton, importZipButton });
+        AddSpan(saveActions, saveButtons);
+        AddSpan(saveActions, Note("导入前会校验 userdata 文件数量和固定大小，并自动备份当前进度。不同 CUSA 区域的存档会放入当前游戏的区域目录。"));
+        saveColumn.Controls.Add(saveActions.Parent);
+
+        TableLayoutPanel cheatColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        cheatColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cheatPage.Controls.Add(cheatColumn);
+        TableLayoutPanel cheatGroup = Group("内置金手指", 2);
+        foreach (string[] definition in CheatDefinitions) {
+            CheckBox box = Check(definition[1]);
+            cheats[definition[0]] = box;
+            AddSpan(cheatGroup, box);
+        }
+        cheats["infinite_health"].CheckedChanged += delegate {
+            if (cheats["infinite_health"].Checked) cheats["no_dead"].Checked = false;
+        };
+        cheats["no_dead"].CheckedChanged += delegate {
+            if (cheats["no_dead"].Checked) cheats["infinite_health"].Checked = false;
+        };
+        cheats["enemy_control"].CheckedChanged += delegate {
+            if (cheats["enemy_control"].Checked) {
+                cheats["debug_camera"].Checked = false;
+                statusLabel.Text = "已关闭“调试相机”：它与“敌人控制”不能同时启用。";
+            }
+        };
+        cheats["debug_camera"].CheckedChanged += delegate {
+            if (cheats["debug_camera"].Checked) {
+                cheats["enemy_control"].Checked = false;
+                statusLabel.Text = "已关闭“敌人控制”：它与“调试相机”不能同时启用。";
+            }
+        };
+        Button commonCheats = new Button { Text = "启用常用辅助", AutoSize = true };
+        Button clearCheats = new Button { Text = "全部关闭", AutoSize = true };
+        commonCheats.Click += delegate {
+            foreach (string[] definition in CheatDefinitions) cheats[definition[0]].Checked = definition[3] == "safe";
+        };
+        clearCheats.Click += delegate { foreach (CheckBox box in cheats.Values) box.Checked = false; };
+        AddSpan(cheatGroup, Flow(commonCheats, clearCheats));
+        AddSpan(cheatGroup, Note("金手指通过 v1.09 内置补丁实现，只建议单机使用。无限血、无限回响和强化材料已在 CUSA03173 v1.09 验证，其他区域视为实验功能；“强化材料”会同时影响其他物品数量。“敌人控制”和“调试相机”会自动互斥。启用任意项目时，启动前都会额外创建存档备份。"));
+        cheatColumn.Controls.Add(cheatGroup.Parent);
+
+        TableLayoutPanel versionColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill,
+            Padding = new Padding(S(4)) };
+        versionColumn.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        versionColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        Label versionLabel = new Label { AutoSize = true, Dock = DockStyle.Fill,
+            Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 0, 0, S(8)),
+            Text = "当前安装包版本：v" + (PackageVersion.Length == 0 ? "未知" : PackageVersion) };
+        TextBox notes = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+            WordWrap = true, Dock = DockStyle.Fill, BackColor = SystemColors.Window,
+            Text = ReleaseNotes.Length == 0 ? "内置更新说明无法读取。" : ReleaseNotes };
+        versionColumn.Controls.Add(versionLabel, 0, 0);
+        versionColumn.Controls.Add(notes, 0, 1);
+        versionPage.Controls.Add(versionColumn);
+
+        logBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
+            WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = SystemColors.Window };
+        logPage.Controls.Add(logBox);
+
+        TableLayoutPanel bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, ColumnCount = 1, AutoSize = true,
+            Padding = new Padding(S(8), S(4), S(8), S(8)) };
+        statusLabel = new Label { AutoSize = true, Text = "请选择游戏本体目录，然后安装运行环境。" };
+        progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(14), Style = ProgressBarStyle.Continuous };
+        FlowLayoutPanel buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
+        Button closeButton = new Button { Text = "关闭", AutoSize = true };
+        closeButton.Click += delegate { Close(); };
+        playButton = new Button { Text = "启动游戏", AutoSize = true };
+        playButton.Click += delegate { StartGame(); };
+        saveButton = new Button { Text = "保存设置", AutoSize = true };
+        saveButton.Click += delegate { SaveSettingsOnly(); };
+        installButton = new Button { Text = "安装 / 更新运行环境", AutoSize = true };
+        installButton.Click += delegate { StartInstall(); };
+        buttons.Controls.AddRange(new Control[] { closeButton, playButton, saveButton, installButton });
+        bottom.Controls.Add(statusLabel);
+        bottom.Controls.Add(progress);
+        bottom.Controls.Add(buttons);
+        Controls.Add(tabs);
+        Controls.Add(bottom);
+        if (background != null) {
+            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(112), BackgroundImage = background,
+                BackgroundImageLayout = ImageLayout.Zoom, BackColor = Color.FromArgb(15, 18, 24) };
+            Label heroText = new Label { AutoSize = true, BackColor = Color.FromArgb(170, 8, 10, 14),
+                ForeColor = Color.WhiteSmoke, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold),
+                Text = "  猎人之夜 · Bloodborne PC  ", Location = new Point(S(18), S(68)),
+                Padding = new Padding(S(6), S(4), S(6), S(4)) };
+            hero.Controls.Add(heroText);
+            Controls.Add(hero);
+        }
+        AcceptButton = installButton;
+        UpdateButtons();
+    }
+
+    void ApplyQualityProfile(string profile) {
+        if (profile == "verylow") {
+            SelectValue(resolution, "1280x720"); SelectValue(frameRate, "60");
+            SelectValue(upscaler, "fsr3"); SelectValue(preset, "4"); SelectValue(live, "0");
+            SelectValue(modelLod, "2");
+            SetEffect("effect_chromatic_aberration", false); SetEffect("effect_dof", false);
+            SetEffect("effect_motion_blur", false); SetEffect("effect_ssao", false);
+            SetEffect("effect_game_aa", false); SetEffect("effect_dynamic_shadows", false);
+            SetEffect("effect_ssr", false);
+        } else if (profile == "low") {
+            SelectValue(resolution, "1920x1080"); SelectValue(frameRate, "60");
+            SelectValue(upscaler, "fsr3"); SelectValue(preset, "3"); SelectValue(live, "0");
+            SelectValue(modelLod, "1");
+            SetEffect("effect_chromatic_aberration", false); SetEffect("effect_dof", false);
+            SetEffect("effect_motion_blur", false); SetEffect("effect_ssao", true);
+            SetEffect("effect_game_aa", false); SetEffect("effect_dynamic_shadows", false);
+            SetEffect("effect_ssr", false);
+        } else if (profile == "medium") {
+            SelectValue(resolution, "1920x1080"); SelectValue(frameRate, "60");
+            SelectValue(upscaler, "fsr3"); SelectValue(preset, "2"); SelectValue(live, "0");
+            SelectValue(modelLod, "0");
+            SetEffect("effect_chromatic_aberration", true); SetEffect("effect_dof", true);
+            SetEffect("effect_motion_blur", false); SetEffect("effect_ssao", true);
+            SetEffect("effect_game_aa", true); SetEffect("effect_dynamic_shadows", true);
+            SetEffect("effect_ssr", false);
+        } else {
+            SelectValue(resolution, "2560x1440"); SelectValue(frameRate, "uncap");
+            SelectValue(upscaler, "fsr3"); SelectValue(preset, "1"); SelectValue(live, "auto");
+            SelectValue(modelLod, "-2");
+            SetEffect("effect_chromatic_aberration", true); SetEffect("effect_dof", true);
+            SetEffect("effect_motion_blur", true); SetEffect("effect_ssao", true);
+            SetEffect("effect_game_aa", true); SetEffect("effect_dynamic_shadows", true);
+            SetEffect("effect_ssr", true);
+        }
+        sharpen.Checked = true;
+        preset.Enabled = UpscalerUsesPreset(Value(upscaler));
+        statusLabel.Text = "已应用“" + ((Choice)qualityProfile.SelectedItem).Text + "”，请保存设置或启动游戏。";
+    }
+
+    void SetEffect(string key, bool value) {
+        foreach (KeyValuePair<string, CheckBox> effect in effects)
+            if (effect.Key == key) { effect.Value.Checked = value; return; }
+    }
+
+    TableLayoutPanel Group(string title, int columns) {
+        GroupBox box = new GroupBox { Text = title, Dock = DockStyle.Top, AutoSize = true,
+            Padding = new Padding(S(8)), AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(8)) };
+        TableLayoutPanel grid = new TableLayoutPanel { ColumnCount = columns, Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        if (columns > 2) grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        box.Controls.Add(grid);
+        return grid;
+    }
+
+    void AddRow(TableLayoutPanel grid, string label, Control control, Control extra) {
+        grid.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, S(6), S(8), 0) });
+        grid.Controls.Add(control);
+        if (grid.ColumnCount > 2) grid.Controls.Add(extra ?? new Label { AutoSize = true });
+    }
+
+    static void AddSpan(TableLayoutPanel grid, Control control) {
+        grid.Controls.Add(control);
+        grid.SetColumnSpan(control, grid.ColumnCount);
+    }
+
+    ComboBox Combo(TableLayoutPanel grid, string label, Choice[] choices) {
+        ComboBox combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = S(320), Anchor = AnchorStyles.Left };
+        combo.Items.AddRange(choices);
+        combo.SelectedIndex = 0;
+        AddRow(grid, label, combo, null);
+        return combo;
+    }
+
+    void AddKey(TableLayoutPanel grid, string label, string name, string defaultValue) {
+        ComboBox combo = Combo(grid, label, KeyChoices);
+        keyBindings[name] = combo;
+        SelectValue(combo, defaultValue);
+    }
+
+    void AddGamepad(TableLayoutPanel grid, string[] definition) {
+        ComboBox combo = Combo(grid, definition[1], GamepadActions);
+        gamepadBindings[definition[0]] = combo;
+        SelectValue(combo, definition[2]);
+    }
+
+    void ResetGamepadMappings() {
+        foreach (string[] definition in GamepadDefinitions)
+            SelectValue(gamepadBindings[definition[0]], definition[2]);
+        statusLabel.Text = "手柄映射已恢复默认；请点击“保存设置”使其生效。";
+    }
+
+    static CheckBox Check(string text) { return new CheckBox { Text = text, AutoSize = true }; }
+    Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = SystemColors.GrayText,
+        MaximumSize = new Size(S(710), 0), Margin = new Padding(0, S(2), 0, S(6)) }; }
+    static FlowLayoutPanel Flow(params Control[] controls) {
+        FlowLayoutPanel flow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill, WrapContents = false };
+        flow.Controls.AddRange(controls);
+        return flow;
+    }
+
+    Button Browse(TextBox target, string description) {
+        Button button = new Button { Text = "浏览…", AutoSize = true };
+        button.Click += delegate {
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog { Description = description, ShowNewFolderButton = true }) {
+                if (Directory.Exists(target.Text)) dialog.SelectedPath = target.Text;
+                if (dialog.ShowDialog(this) == DialogResult.OK) target.Text = dialog.SelectedPath;
+            }
+        };
+        return button;
+    }
+
+    static string Value(ComboBox combo) { return combo.SelectedItem == null ? "" : ((Choice)combo.SelectedItem).Value; }
+    static void SelectValue(ComboBox combo, string value) {
+        for (int i = 0; i < combo.Items.Count; ++i)
+            if (((Choice)combo.Items[i]).Value == value) { combo.SelectedIndex = i; return; }
+    }
+
+    static Dictionary<string, string> ReadValues(string path) {
+        Dictionary<string, string> result = new Dictionary<string, string>();
+        if (!File.Exists(path)) return result;
+        foreach (string raw in File.ReadAllLines(path)) {
+            string line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith("#")) continue;
+            int equals = line.IndexOf('=');
+            if (equals > 0) result[line.Substring(0, equals).Trim()] = line.Substring(equals + 1).Trim();
+        }
+        return result;
+    }
+
+    void LoadSettings(string rootArgument) {
+        Dictionary<string, string> state = ReadValues(stateFile);
+        string defaultRoot = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "Bloodborne-PC-运行环境");
+        rootBox.Text = !string.IsNullOrEmpty(rootArgument) ? Path.GetFullPath(rootArgument) : Get(state, "install_root", defaultRoot);
+        gameBox.Text = Get(state, "game_dir", "");
+        saveRootBox.Text = Get(state, "save_root", SaveTools.DefaultRoot);
+        autoBackup.Checked = Get(state, "auto_backup", "1") == "1";
+        SelectValue(qualityProfile, Get(state, "quality_profile", "medium"));
+        Dictionary<string, string> ini = ReadValues(Path.Combine(rootBox.Text, "bbport.ini"));
+        SelectValue(resolution, Get(ini, "output_res", DefaultResolution()));
+        SelectValue(frameRate, Get(state, "fps", "uncap"));
+        SelectValue(presentMode, Get(state, "present_mode", ""));
+        SelectValue(upscaler, Get(ini, "upscaler", Default("upscaler")));
+        SelectValue(preset, Get(ini, "preset", Default("preset")));
+        SelectValue(live, Get(ini, "live_resolution", Default("live_resolution")));
+        SelectValue(modelLod, Get(ini, "model_lod", Default("model_lod")));
+        SelectValue(language, Get(state, "language", "1"));
+        fullscreen.Checked = Get(ini, "fullscreen", "1") == "1";
+        showFps.Checked = Get(ini, "show_fps", Default("show_fps")) == "1";
+        sharpen.Checked = Get(ini, "sharpen", Default("sharpen")) == "1";
+        foreach (KeyValuePair<string, CheckBox> effect in effects) {
+            string fallback = "0";
+            foreach (string[] definition in EffectDefinitions) if (definition[0] == effect.Key) fallback = definition[2];
+            effect.Value.Checked = Get(ini, effect.Key, fallback) == "1";
+        }
+        desktopLink.Checked = Get(state, "desktop_link", "1") == "1";
+        startMenuLink.Checked = Get(state, "start_menu_link", "1") == "1";
+        foreach (KeyValuePair<string, ComboBox> binding in keyBindings)
+            SelectValue(binding.Value, Get(state, "BB_KEY_" + binding.Key, Value(binding.Value)));
+        foreach (KeyValuePair<string, ComboBox> binding in gamepadBindings)
+            SelectValue(binding.Value, Get(state, "BB_PAD_" + binding.Key, Value(binding.Value)));
+        mouseEnabled.Checked = Get(state, "BB_MOUSE_ENABLED", "1") == "1";
+        mouseInvert.Checked = Get(state, "BB_MOUSE_INVERT_Y", "0") == "1";
+        decimal sensitivity;
+        if (decimal.TryParse(Get(state, "BB_MOUSE_SENSITIVITY", "3.0"), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out sensitivity))
+            mouseSensitivity.Value = Math.Max(mouseSensitivity.Minimum, Math.Min(mouseSensitivity.Maximum, sensitivity));
+        SelectValue(mouseLeft, Get(state, "BB_MOUSE_LEFT", "r1"));
+        SelectValue(mouseRight, Get(state, "BB_MOUSE_RIGHT", "l1"));
+        SelectValue(mouseMiddle, Get(state, "BB_MOUSE_MIDDLE", "r3"));
+        SelectValue(mouseX1, Get(state, "BB_MOUSE_X1", "square"));
+        SelectValue(mouseX2, Get(state, "BB_MOUSE_X2", "triangle"));
+        SelectValue(mouseWheelUp, Get(state, "BB_MOUSE_WHEEL_UP", "up"));
+        SelectValue(mouseWheelDown, Get(state, "BB_MOUSE_WHEEL_DOWN", "down"));
+        foreach (string[] definition in CheatDefinitions)
+            cheats[definition[0]].Checked = Get(state, "cheat_" + definition[0], "0") == "1";
+        preset.Enabled = UpscalerUsesPreset(Value(upscaler));
+        CheckGame();
+        RefreshSaveManager();
+    }
+
+    static string Get(Dictionary<string, string> map, string key, string fallback) {
+        string value;
+        return map.TryGetValue(key, out value) ? value : fallback;
+    }
+    static string Default(string key) { return Get(Defaults, key, ""); }
+    static string DefaultResolution() {
+        Rectangle screen = Screen.PrimaryScreen.Bounds;
+        if (screen.Width >= 3840 && screen.Height >= 2160) return "3840x2160";
+        if (screen.Width >= 2560 && screen.Height >= 1440) return "2560x1440";
+        return "1920x1080";
+    }
+
+    bool CheckGame() {
+        string dir = gameBox.Text.Trim().Trim('"');
+        if (dir.Length == 0) { SetGameStatus("请选择包含 eboot.bin 的 Bloodborne v1.09 游戏目录。", false); return false; }
+        if (!File.Exists(Path.Combine(dir, "eboot.bin"))) { SetGameStatus("该目录中没有 eboot.bin。", true); return false; }
+        if (!File.Exists(Path.Combine(dir, "sce_sys", "param.sfo"))) {
+            SetGameStatus("已找到 eboot.bin，但缺少 sce_sys\\param.sfo，无法确认是否为 v1.09。", true);
+            return true;
+        }
+        SetGameStatus("已找到游戏文件。请确认游戏本体已更新到 v1.09。", false);
+        return true;
+    }
+
+    void SetGameStatus(string text, bool warning) {
+        gameStatus.Text = text;
+        gameStatus.ForeColor = warning ? Color.Firebrick : SystemColors.GrayText;
+    }
+
+    LaunchOptions Collect() {
+        LaunchOptions options = new LaunchOptions();
+        options.Root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
+        options.Game = Path.GetFullPath(gameBox.Text.Trim().Trim('"'));
+        options.SaveRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"'));
+        options.AutoBackup = autoBackup.Checked;
+        options.DesktopLink = desktopLink.Checked;
+        options.StartMenuLink = startMenuLink.Checked;
+        options.Ini["upscaler"] = Value(upscaler);
+        options.Ini["preset"] = Value(preset);
+        options.Ini["sharpen"] = sharpen.Checked ? "1" : "0";
+        options.Ini["show_fps"] = showFps.Checked ? "1" : "0";
+        options.Ini["output_res"] = Value(resolution);
+        options.Ini["fullscreen"] = fullscreen.Checked ? "1" : "0";
+        options.Ini["live_resolution"] = Value(live);
+        options.Ini["model_lod"] = Value(modelLod);
+        foreach (KeyValuePair<string, CheckBox> effect in effects) options.Ini[effect.Key] = effect.Value.Checked ? "1" : "0";
+        options.Env["BB_FPS"] = Value(frameRate);
+        options.Env["BB_LANGUAGE"] = Value(language);
+        options.Env["BB_PRESENT_MODE"] = Value(presentMode);
+        foreach (KeyValuePair<string, ComboBox> binding in keyBindings)
+            options.Env["BB_KEY_" + binding.Key] = Value(binding.Value);
+        foreach (KeyValuePair<string, ComboBox> binding in gamepadBindings)
+            options.Env["BB_PAD_" + binding.Key] = Value(binding.Value);
+        options.Env["BB_MOUSE_ENABLED"] = mouseEnabled.Checked ? "1" : "0";
+        options.Env["BB_MOUSE_INVERT_Y"] = mouseInvert.Checked ? "1" : "0";
+        options.Env["BB_MOUSE_SENSITIVITY"] = mouseSensitivity.Value.ToString("0.0", CultureInfo.InvariantCulture);
+        options.Env["BB_MOUSE_LEFT"] = Value(mouseLeft);
+        options.Env["BB_MOUSE_RIGHT"] = Value(mouseRight);
+        options.Env["BB_MOUSE_MIDDLE"] = Value(mouseMiddle);
+        options.Env["BB_MOUSE_X1"] = Value(mouseX1);
+        options.Env["BB_MOUSE_X2"] = Value(mouseX2);
+        options.Env["BB_MOUSE_WHEEL_UP"] = Value(mouseWheelUp);
+        options.Env["BB_MOUSE_WHEEL_DOWN"] = Value(mouseWheelDown);
+        List<string> enabledCheats = new List<string>();
+        foreach (string[] definition in CheatDefinitions)
+            if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);
+        options.Env["BB_PATCHES"] = string.Join(";", enabledCheats.ToArray());
+        return options;
+    }
+
+    bool CheckInputs(bool requireInstalled) {
+        if (rootBox.Text.Trim().Length == 0) { Warn("请选择运行环境目录。"); return false; }
+        if (saveRootBox.Text.Trim().Length == 0) { Warn("请选择独立的玩家数据目录。"); return false; }
+        if (!CheckGame()) { Warn("请选择正确的游戏本体目录。"); return false; }
+        string root;
+        string playerRoot;
+        try { root = Path.GetFullPath(rootBox.Text.Trim().Trim('"')); }
+        catch (Exception e) { Warn("运行环境目录无效：" + e.Message); return false; }
+        try { playerRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"')); }
+        catch (Exception e) { Warn("玩家数据目录无效：" + e.Message); return false; }
+        if (Path.GetPathRoot(root).Equals(root, StringComparison.OrdinalIgnoreCase)) {
+            Warn("请不要把运行环境直接安装到磁盘根目录。"); return false;
+        }
+        if (Path.GetPathRoot(playerRoot).Equals(playerRoot, StringComparison.OrdinalIgnoreCase)) {
+            Warn("请不要把玩家数据直接放在磁盘根目录。"); return false;
+        }
+        if (requireInstalled && !File.Exists(Path.Combine(root, "out", "bb-probe.exe"))) {
+            Warn("运行环境尚未安装，请先点击“安装 / 更新运行环境”。"); return false;
+        }
+        if (requireInstalled) {
+            string expected = ExpectedProbeHash();
+            string installed = FileSha256(Path.Combine(root, "out", "bb-probe.exe"));
+            if (expected.Length == 0 || !installed.Equals(expected, StringComparison.OrdinalIgnoreCase)) {
+                Warn("运行环境版本过旧或文件不完整，动作键等新功能不会生效。\r\n\r\n" +
+                     "请先点击“安装 / 更新运行环境”，完成后再启动游戏。\r\n\r\n" +
+                     "当前核心：" + (installed.Length > 12 ? installed.Substring(0, 12) : "无法读取") +
+                     "\r\n所需核心：" + (expected.Length > 12 ? expected.Substring(0, 12) : "无法读取"));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    string ExpectedProbeHash() {
+        if (expectedProbeHash != null) return expectedProbeHash;
+        expectedProbeHash = "";
+        try {
+            Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource);
+            if (resource == null) return expectedProbeHash;
+            using (resource)
+            using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read)) {
+                foreach (ZipArchiveEntry entry in archive.Entries) {
+                    if (entry.FullName.Replace('\\', '/').Equals("BUILD_INFO.txt", StringComparison.OrdinalIgnoreCase)) {
+                        using (StreamReader reader = new StreamReader(entry.Open(), Encoding.UTF8)) {
+                            foreach (string line in reader.ReadToEnd().Split(new string[] { "\r\n", "\n" }, StringSplitOptions.None))
+                                if (line.StartsWith("bb-probe SHA256: ", StringComparison.Ordinal))
+                                    expectedProbeHash = line.Substring("bb-probe SHA256: ".Length).Trim();
+                        }
+                        break;
+                    }
+                }
+            }
+        } catch { expectedProbeHash = ""; }
+        return expectedProbeHash;
+    }
+
+    static string FileSha256(string path) {
+        try {
+            using (SHA256 sha = SHA256.Create())
+            using (FileStream stream = File.OpenRead(path))
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+        } catch { return ""; }
+    }
+
+    void Warn(string text) { MessageBox.Show(this, text, TitleText, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+
+    string SaveRootPath() {
+        string value = saveRootBox.Text.Trim().Trim('"');
+        return value.Length == 0 ? SaveTools.DefaultRoot : Path.GetFullPath(value);
+    }
+
+    void RefreshSaveManager() {
+        if (backupList == null) return;
+        backupList.Items.Clear();
+        if (characterList != null) characterList.Items.Clear();
+        try {
+            string root = SaveRootPath();
+            string savedata = Path.Combine(root, "savedata");
+            if (Directory.Exists(savedata)) {
+                try {
+                    SaveValidation current = SaveTools.ValidateDirectory(savedata);
+                    saveStatus.Text = string.Format("当前存档：{0}，{1} 个数据文件，{2:N1} MB，最后修改 {3}",
+                        current.TitleId.Length == 0 ? "区域未知" : current.TitleId, current.DataFiles,
+                        current.Bytes / 1048576.0, current.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
+                    saveStatus.ForeColor = SystemColors.GrayText;
+                    if (characterList != null) {
+                        foreach (SaveCharacter character in SaveTools.ListCharacters(root)) {
+                            ListViewItem row = new ListViewItem((character.Index + 1).ToString());
+                            row.SubItems.Add(Path.GetFileName(character.File));
+                            row.SubItems.Add(character.Name);
+                            row.SubItems.Add(character.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
+                            row.Tag = character;
+                            characterList.Items.Add(row);
+                        }
+                    }
+                } catch (Exception e) {
+                    saveStatus.Text = "存档目录存在，但校验未通过：" + e.Message;
+                    saveStatus.ForeColor = Color.Firebrick;
+                }
+            } else {
+                saveStatus.Text = "独立目录中还没有存档；首次启动会自动迁移旧运行环境的存档。";
+                saveStatus.ForeColor = SystemColors.GrayText;
+            }
+            string backups = SaveTools.BackupRoot(root);
+            if (Directory.Exists(backups)) {
+                List<FileInfo> files = new List<FileInfo>(new DirectoryInfo(backups).GetFiles("*.zip"));
+                files.Sort(delegate(FileInfo a, FileInfo b) { return b.LastWriteTime.CompareTo(a.LastWriteTime); });
+                foreach (FileInfo file in files) {
+                    ListViewItem item = new ListViewItem(file.Name);
+                    item.SubItems.Add(file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                    item.SubItems.Add(string.Format("{0:N1} MB", file.Length / 1048576.0));
+                    item.Tag = file.FullName;
+                    backupList.Items.Add(item);
+                }
+            }
+        } catch (Exception e) {
+            saveStatus.Text = "读取存档失败：" + e.Message;
+            saveStatus.ForeColor = Color.Firebrick;
+        }
+        restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0;
+        if (renameCharacterButton != null)
+            renameCharacterButton.Enabled = !busy && characterList.SelectedItems.Count > 0;
+    }
+
+    string AskCharacterName(string current) {
+        using (Form dialog = new Form()) {
+            dialog.Text = "修改角色名";
+            dialog.Font = Font;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.MinimizeBox = false;
+            dialog.MaximizeBox = false;
+            dialog.ShowInTaskbar = false;
+            dialog.ClientSize = new Size(S(390), S(145));
+            Label prompt = new Label { AutoSize = true, Text = "新角色名（1–16 个英文字符）：",
+                Location = new Point(S(16), S(16)) };
+            TextBox inputBox = new TextBox { Text = current, MaxLength = 16,
+                Location = new Point(S(16), S(44)), Width = S(355) };
+            Button ok = new Button { Text = "确定", DialogResult = DialogResult.OK,
+                AutoSize = true, Location = new Point(S(214), S(94)) };
+            Button cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel,
+                AutoSize = true, Location = new Point(S(298), S(94)) };
+            dialog.Controls.AddRange(new Control[] { prompt, inputBox, ok, cancel });
+            dialog.AcceptButton = ok;
+            dialog.CancelButton = cancel;
+            dialog.Shown += delegate { inputBox.Focus(); inputBox.SelectAll(); };
+            return dialog.ShowDialog(this) == DialogResult.OK ? inputBox.Text : null;
+        }
+    }
+
+    void RenameSelectedCharacter() {
+        if (characterList.SelectedItems.Count == 0) return;
+        SaveCharacter character = (SaveCharacter)characterList.SelectedItems[0].Tag;
+        string name = AskCharacterName(character.Name);
+        if (name == null || name == character.Name) return;
+        try {
+            string backup = SaveTools.CreateBackup(SaveRootPath(), "before-rename");
+            if (backup == null) throw new InvalidDataException("没有找到可备份的当前存档。");
+            SaveTools.RenameCharacter(character, name);
+            statusLabel.Text = "角色名已从“" + character.Name + "”修改为“" + name + "”；原存档已备份。";
+            RefreshSaveManager();
+        } catch (Exception e) { Warn("修改角色名失败：" + e.Message); }
+    }
+
+    void ManualBackup() {
+        try {
+            string path = SaveTools.CreateBackup(SaveRootPath(), "manual");
+            if (path == null) { Warn("当前目录中没有可备份的 Bloodborne 存档。"); return; }
+            statusLabel.Text = "已创建存档备份：" + Path.GetFileName(path);
+            RefreshSaveManager();
+        } catch (Exception e) { Warn("备份存档失败：" + e.Message); }
+    }
+
+    void RestoreSelectedBackup() {
+        if (backupList.SelectedItems.Count == 0) return;
+        string path = (string)backupList.SelectedItems[0].Tag;
+        if (MessageBox.Show(this, "确定恢复此备份吗？\n\n" + Path.GetFileName(path) +
+            "\n\n当前存档会先自动备份，然后再替换。", TitleText,
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        try {
+            string root = SaveRootPath();
+            SaveTools.CreateBackup(root, "before-restore");
+            SaveTools.RestoreBackup(path, root);
+            statusLabel.Text = "存档已恢复。";
+            RefreshSaveManager();
+        } catch (Exception e) { Warn("恢复存档失败，原存档已尽量保留：" + e.Message); }
+    }
+
+    void ExportCurrentSave() {
+        try {
+            string backup = SaveTools.CreateBackup(SaveRootPath(), "export");
+            if (backup == null) { Warn("当前目录中没有可导出的 Bloodborne 存档。"); return; }
+            using (SaveFileDialog dialog = new SaveFileDialog { Filter = "ZIP 存档包 (*.zip)|*.zip",
+                FileName = "Bloodborne-save-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip" }) {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                File.Copy(backup, dialog.FileName, true);
+                statusLabel.Text = "存档已导出到：" + dialog.FileName;
+            }
+            RefreshSaveManager();
+        } catch (Exception e) { Warn("导出存档失败：" + e.Message); }
+    }
+
+    void ImportExternalFolder() {
+        using (FolderBrowserDialog dialog = new FolderBrowserDialog { Description = "选择外部 Bloodborne 存档文件夹",
+            ShowNewFolderButton = false }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            ValidateAndImport(dialog.SelectedPath, null);
+        }
+    }
+
+    void ImportExternalZip() {
+        using (OpenFileDialog dialog = new OpenFileDialog { Filter = "ZIP 存档包 (*.zip)|*.zip|所有文件 (*.*)|*.*",
+            Title = "选择外部 Bloodborne 存档包" }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            string root = SaveRootPath();
+            Directory.CreateDirectory(root);
+            string extracted = null;
+            try {
+                extracted = SaveTools.ExtractZipSafely(dialog.FileName, root);
+                ValidateAndImport(extracted, extracted);
+            } catch (Exception e) { Warn("读取 ZIP 存档失败：" + e.Message); }
+            finally { if (extracted != null && Directory.Exists(extracted)) Directory.Delete(extracted, true); }
+        }
+    }
+
+    void ValidateAndImport(string sourcePath, string temporaryRoot) {
+        try {
+            SaveValidation source = SaveTools.ValidateDirectory(sourcePath);
+            string targetId = SaveTools.ReadTitleId(gameBox.Text.Trim().Trim('"'));
+            if (targetId.Length == 0) targetId = source.TitleId;
+            string message = source.Summary + "\r\n\r\n目标区域 ID：" +
+                (targetId.Length == 0 ? "无法识别" : targetId) + "\r\n\r\n是否导入？";
+            if (MessageBox.Show(this, message, "外部存档验证结果", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information) != DialogResult.Yes) return;
+            if (targetId.Length == 0) throw new InvalidDataException("请选择正确的游戏本体，以便读取区域 ID。");
+            string root = SaveRootPath();
+            Directory.CreateDirectory(root);
+            SaveTools.CreateBackup(root, "before-import");
+            SaveTools.ImportSave(source, root, targetId);
+            statusLabel.Text = "外部存档已验证并导入到 " + targetId + "。";
+            RefreshSaveManager();
+        } catch (Exception e) { Warn("外部存档验证／导入失败：" + e.Message); }
+    }
+
+    void MigrateLegacySaveIfNeeded(LaunchOptions options) {
+        Directory.CreateDirectory(options.SaveRoot);
+        if (SaveTools.HasSave(options.SaveRoot)) return;
+        string legacy = Path.Combine(options.Root, "user");
+        if (Path.GetFullPath(legacy).Equals(Path.GetFullPath(options.SaveRoot), StringComparison.OrdinalIgnoreCase) ||
+            !SaveTools.HasSave(legacy)) return;
+        string oldSave = Path.Combine(legacy, "savedata");
+        string newSave = Path.Combine(options.SaveRoot, "savedata");
+        SaveTools.CopyTree(oldSave, newSave, false);
+        string oldTrophy = Path.Combine(legacy, "custom_trophy");
+        if (Directory.Exists(oldTrophy)) SaveTools.CopyTree(oldTrophy, Path.Combine(options.SaveRoot, "custom_trophy"), false);
+        SaveTools.ValidateDirectory(newSave);
+        Log("已把旧运行环境的存档复制到独立玩家数据目录：" + options.SaveRoot);
+    }
+
+    void StartInstall() {
+        if (!CheckInputs(false)) return;
+        LaunchOptions options = Collect();
+        busy = true;
+        UpdateButtons();
+        tabs.SelectedTab = logPage;
+        progress.Style = ProgressBarStyle.Continuous;
+        progress.Value = 0;
+        Thread worker = new Thread(new ThreadStart(delegate { Install(options); }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void Install(LaunchOptions options) {
+        string error = null;
+        try {
+            Log("正在安装到：" + options.Root);
+            Directory.CreateDirectory(options.Root);
+            ExtractPayload(options.Root);
+            MigrateLegacySaveIfNeeded(options);
+            Configure(options, true);
+            string installedLauncher = Path.Combine(options.Root, InstalledExeName);
+            string current = Path.GetFullPath(Application.ExecutablePath);
+            if (!current.Equals(Path.GetFullPath(installedLauncher), StringComparison.OrdinalIgnoreCase)) {
+                Log("复制中文启动器……");
+                File.Copy(current, installedLauncher, true);
+            }
+            if (options.DesktopLink) MakeShortcut(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), installedLauncher, options);
+            if (options.StartMenuLink) MakeShortcut(Environment.GetFolderPath(Environment.SpecialFolder.Programs), installedLauncher, options);
+        } catch (Exception e) { error = e.Message; Log("安装失败：" + e); }
+        BeginInvoke((Action)delegate { InstallFinished(error); });
+    }
+
+    void ExtractPayload(string destination) {
+        Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource);
+        if (resource == null) throw new InvalidOperationException("EXE 中没有找到内置运行环境。请重新生成或重新下载完整文件。");
+        string rootFull = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        using (resource)
+        using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read)) {
+            int count = archive.Entries.Count;
+            BeginInvoke((Action)delegate { progress.Maximum = Math.Max(1, count); });
+            for (int i = 0; i < count; ++i) {
+                ZipArchiveEntry entry = archive.Entries[i];
+                string target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("内置文件路径不安全：" + entry.FullName);
+                if (entry.Name.Length == 0) { Directory.CreateDirectory(target); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                using (Stream input = entry.Open())
+                using (FileStream output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None))
+                    input.CopyTo(output);
+                if ((i % 20) == 0 || i + 1 == count) {
+                    int shown = i + 1;
+                    BeginInvoke((Action)delegate {
+                        progress.Value = Math.Min(progress.Maximum, shown);
+                        statusLabel.Text = string.Format("正在解压运行环境：{0}/{1}", shown, count);
+                    });
+                }
+            }
+        }
+        Log("运行环境解压完成。");
+    }
+
+    void InstallFinished(string error) {
+        busy = false;
+        UpdateButtons();
+        if (error == null) {
+            progress.Value = progress.Maximum;
+            statusLabel.Text = "安装完成，可以启动游戏。";
+            Log("安装完成。");
+            if (MessageBox.Show(this, "运行环境已安装完成。现在启动游戏吗？", TitleText,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes) StartGame();
+        } else {
+            statusLabel.Text = "安装失败：" + error;
+            MessageBox.Show(this, "安装失败：" + error + "\n\n详细信息见“运行日志”。", TitleText,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    void SaveSettingsOnly() {
+        if (!CheckInputs(true)) return;
+        try {
+            Configure(Collect(), false);
+            statusLabel.Text = "设置已保存。";
+        } catch (Exception e) { Warn("保存设置失败：" + e.Message); }
+    }
+
+    void Configure(LaunchOptions options, bool shortcuts) {
+        Directory.CreateDirectory(Path.Combine(options.Root, "out"));
+        WriteIni(Path.Combine(options.Root, "bbport.ini"), options.Ini);
+        File.WriteAllText(Path.Combine(options.Root, "out", "game_dir.txt"), options.Game, new UTF8Encoding(false));
+        Dictionary<string, string> state = new Dictionary<string, string>();
+        state["install_root"] = options.Root;
+        state["game_dir"] = options.Game;
+        state["save_root"] = options.SaveRoot;
+        state["auto_backup"] = options.AutoBackup ? "1" : "0";
+        state["quality_profile"] = Value(qualityProfile);
+        state["fps"] = options.Env["BB_FPS"];
+        state["language"] = options.Env["BB_LANGUAGE"];
+        state["present_mode"] = options.Env["BB_PRESENT_MODE"];
+        state["desktop_link"] = options.DesktopLink ? "1" : "0";
+        state["start_menu_link"] = options.StartMenuLink ? "1" : "0";
+        foreach (KeyValuePair<string, string> item in options.Env)
+            if (item.Key.StartsWith("BB_KEY_") || item.Key.StartsWith("BB_MOUSE_") ||
+                item.Key.StartsWith("BB_PAD_")) state[item.Key] = item.Value;
+        foreach (string[] definition in CheatDefinitions)
+            state["cheat_" + definition[0]] = cheats[definition[0]].Checked ? "1" : "0";
+        Directory.CreateDirectory(Path.GetDirectoryName(stateFile));
+        WriteSimple(stateFile, state);
+        Log("设置已保存：" + Path.Combine(options.Root, "bbport.ini"));
+    }
+
+    static void WriteIni(string path, Dictionary<string, string> values) {
+        List<string> lines = File.Exists(path) ? new List<string>(File.ReadAllLines(path)) : new List<string>();
+        HashSet<string> written = new HashSet<string>();
+        for (int i = 0; i < lines.Count; ++i) {
+            string line = lines[i];
+            int equals = line.IndexOf('=');
+            if (equals <= 0 || line.TrimStart().StartsWith("#")) continue;
+            string key = line.Substring(0, equals).Trim();
+            if (values.ContainsKey(key)) { lines[i] = key + "=" + values[key]; written.Add(key); }
+        }
+        if (lines.Count == 0) lines.Add("# bbport settings (in-game menu: Insert / L3+R3)");
+        foreach (KeyValuePair<string, string> item in values)
+            if (!written.Contains(item.Key)) lines.Add(item.Key + "=" + item.Value);
+        File.WriteAllText(path, string.Join("\r\n", lines.ToArray()) + "\r\n", new UTF8Encoding(false));
+    }
+
+    static void WriteSimple(string path, Dictionary<string, string> values) {
+        StringBuilder text = new StringBuilder();
+        foreach (KeyValuePair<string, string> item in values) text.Append(item.Key).Append('=').Append(item.Value).Append("\r\n");
+        File.WriteAllText(path, text.ToString(), new UTF8Encoding(false));
+    }
+
+    void MakeShortcut(string folder, string launcher, LaunchOptions options) {
+        try {
+            string icon = MakeIcon(options);
+            string path = Path.Combine(folder, "Bloodborne PC.lnk");
+            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+            object shell = Activator.CreateInstance(shellType);
+            object link = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { path });
+            Type linkType = link.GetType();
+            Action<string, object> set = delegate(string name, object value) {
+                linkType.InvokeMember(name, BindingFlags.SetProperty, null, link, new object[] { value });
+            };
+            set("TargetPath", launcher);
+            set("Arguments", "--install-root \"" + options.Root + "\"");
+            set("WorkingDirectory", options.Root);
+            set("Description", "Bloodborne PC 中文启动器");
+            if (icon != null) set("IconLocation", icon + ",0");
+            linkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, link, null);
+            Log("已创建快捷方式：" + path);
+        } catch (Exception e) { Log("创建快捷方式失败：" + e.Message); }
+    }
+
+    string MakeIcon(LaunchOptions options) {
+        string png = Path.Combine(options.Game, "sce_sys", "icon0.png");
+        string ico = Path.Combine(options.Root, "out", "bloodborne.ico");
+        try {
+            if (!File.Exists(png)) return null;
+            byte[] image;
+            using (Bitmap source = new Bitmap(png))
+            using (Bitmap small = new Bitmap(source, new Size(256, 256)))
+            using (MemoryStream stream = new MemoryStream()) {
+                small.Save(stream, ImageFormat.Png);
+                image = stream.ToArray();
+            }
+            using (BinaryWriter writer = new BinaryWriter(File.Create(ico))) {
+                writer.Write((short)0); writer.Write((short)1); writer.Write((short)1);
+                writer.Write((byte)0); writer.Write((byte)0); writer.Write((byte)0); writer.Write((byte)0);
+                writer.Write((short)1); writer.Write((short)32); writer.Write(image.Length); writer.Write(22);
+                writer.Write(image);
+            }
+            return ico;
+        } catch (Exception e) { Log("生成游戏图标失败：" + e.Message); return null; }
+    }
+
+    void StartGame() {
+        if (!CheckInputs(true)) return;
+        LaunchOptions options = Collect();
+        try { MigrateLegacySaveIfNeeded(options); Configure(options, false); }
+        catch (Exception e) { Warn("保存设置失败：" + e.Message); return; }
+        string python = Path.Combine(options.Root, "python", "python.exe");
+        string script = Path.Combine(options.Root, "scripts", "run_game.py");
+        if (!File.Exists(python) || !File.Exists(script)) { Warn("运行环境不完整，请重新点击“安装 / 更新运行环境”。"); return; }
+        busy = true;
+        UpdateButtons();
+        tabs.SelectedTab = logPage;
+        progress.Style = ProgressBarStyle.Marquee;
+        statusLabel.Text = "正在准备并启动游戏……";
+        Log("");
+        Log("正在启动游戏：" + options.Game);
+        Thread worker = new Thread(new ThreadStart(delegate { RunGame(options, python, script); }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void RunGame(LaunchOptions options, string python, string script) {
+        string error = null;
+        int exitCode = -1;
+        string logPath = null;
+        List<string> recent = new List<string>();
+        object outputLock = new object();
+        StreamWriter runLog = null;
+        try {
+            Directory.CreateDirectory(options.SaveRoot);
+            if (options.AutoBackup || options.Env["BB_PATCHES"].Length > 0) {
+                string backup = SaveTools.CreateBackup(options.SaveRoot,
+                    options.Env["BB_PATCHES"].Length > 0 ? "auto-before-cheats" : "auto-before");
+                if (backup != null) Log("启动前存档备份：" + backup);
+                SaveTools.PruneAutomaticBackups(options.SaveRoot, 20);
+            }
+            string logDirectory = Path.Combine(options.Root, "logs");
+            Directory.CreateDirectory(logDirectory);
+            logPath = Path.Combine(logDirectory, "run-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".log");
+            runLog = new StreamWriter(logPath, false, new UTF8Encoding(false));
+            runLog.AutoFlush = true;
+            lastRunLog = logPath;
+            Action<string> capture = delegate(string line) {
+                if (line == null) return;
+                lock (outputLock) {
+                    runLog.WriteLine(line);
+                    recent.Add(line);
+                    if (recent.Count > 240) recent.RemoveAt(0);
+                }
+                Log(line);
+            };
+            capture("Bloodborne PC launch log " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+            capture("Runtime: " + options.Root);
+            capture("Game: " + options.Game);
+            capture("Player data: " + options.SaveRoot);
+            ProcessStartInfo info = new ProcessStartInfo(python,
+                "\"" + script + "\" --game-dir \"" + options.Game + "\"") {
+                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = options.Root,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+            info.EnvironmentVariables["PYTHONUTF8"] = "1";
+            info.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            info.EnvironmentVariables["BB_PREBUILT"] = "1";
+            info.EnvironmentVariables["BB_DATA_DIR"] = options.Root;
+            info.EnvironmentVariables["BB_RUNTIME"] = Path.Combine(options.Root, "runtime");
+            info.EnvironmentVariables["BB_PYTHON"] = python;
+            info.EnvironmentVariables["BB_USER_DIR"] = options.SaveRoot;
+            foreach (KeyValuePair<string, string> item in options.Env) {
+                if (item.Value.Length > 0) info.EnvironmentVariables[item.Key] = item.Value;
+                else info.EnvironmentVariables.Remove(item.Key);
+            }
+            info.EnvironmentVariables["PATH"] = Path.Combine(options.Root, "runtime") + Path.PathSeparator +
+                Environment.GetEnvironmentVariable("PATH");
+            using (Process process = new Process { StartInfo = info }) {
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) capture(e.Data); };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) capture(e.Data); };
+                process.Start();
+                launcherProcess = process;
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                process.WaitForExit();
+                process.WaitForExit();
+                exitCode = process.ExitCode;
+                launcherProcess = null;
+            }
+            if (options.AutoBackup) {
+                string backup = SaveTools.CreateBackup(options.SaveRoot, "auto-after");
+                if (backup != null) Log("退出后存档备份：" + backup);
+                SaveTools.PruneAutomaticBackups(options.SaveRoot, 20);
+            }
+        } catch (Exception e) { error = e.Message; Log("启动失败：" + e); }
+        finally { if (runLog != null) { lock (outputLock) runLog.Dispose(); } }
+        string diagnostic = CrashDiagnostic(recent);
+        BeginInvoke((Action)delegate { GameFinished(error, exitCode, logPath, diagnostic); });
+    }
+
+    static string CrashDiagnostic(List<string> lines) {
+        List<string> important = new List<string>();
+        foreach (string line in lines) {
+            string lower = line.ToLowerInvariant();
+            if (lower.Contains("crash report") || lower.Contains(" fault ") || lower.Contains("target region") ||
+                lower.Contains("exception") || lower.Contains("rip=") || lower.Contains("rax=") ||
+                lower.StartsWith("  #") || lower.Contains("gpu guest writes") || lower.Contains("stop:"))
+                important.Add(line);
+        }
+        List<string> chosen = important.Count > 0 ? important : lines;
+        int first = Math.Max(0, chosen.Count - 45);
+        StringBuilder result = new StringBuilder();
+        for (int i = first; i < chosen.Count; ++i) result.Append(chosen[i]).Append("\r\n");
+        return result.ToString().Trim();
+    }
+
+    void GameFinished(string error, int exitCode, string logPath, string diagnostic) {
+        busy = false;
+        progress.Style = ProgressBarStyle.Continuous;
+        progress.Value = 0;
+        UpdateButtons();
+        if (error != null) {
+            statusLabel.Text = "启动失败：" + error;
+            Warn("启动游戏失败：" + error);
+        } else if (exitCode == 0) {
+            statusLabel.Text = "游戏已退出。";
+            Log("游戏已正常退出。");
+        } else {
+            statusLabel.Text = "游戏已退出，返回代码：" + exitCode;
+            Log("游戏返回代码：" + exitCode);
+            uint native = unchecked((uint)exitCode);
+            if (exitCode == 139 || native == 0xC0000005u) {
+                string detail = "返回代码 139 表示程序发生了内存访问异常。下面是本次捕获到的崩溃位置和寄存器摘要：\r\n\r\n" +
+                    (diagnostic.Length == 0 ? "没有捕获到崩溃栈，请查看完整日志。" : diagnostic) +
+                    "\r\n\r\n完整日志：" + (logPath ?? "未生成");
+                MessageBox.Show(this, detail, "Bloodborne PC 崩溃详情（139）",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            } else if (exitCode == 23) {
+                MessageBox.Show(this, "返回代码 23：游戏内容配置或 AppContent 初始化失败。请确认游戏为完整的 v1.09，" +
+                    "且 eboot.bin、sce_sys 和 dvdroot_ps4 来自同一份游戏。\r\n\r\n完整日志：" + (logPath ?? "未生成"),
+                    "Bloodborne PC 启动失败（23）", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        RefreshSaveManager();
+    }
+
+    void Log(string line) { pending.Enqueue(line); }
+    void DrainLog() {
+        if (pending.IsEmpty) return;
+        StringBuilder text = new StringBuilder();
+        string line;
+        while (pending.TryDequeue(out line)) text.Append(line.Replace("\r", "")).Append("\r\n");
+        logBox.AppendText(text.ToString());
+    }
+    void UpdateButtons() {
+        installButton.Enabled = !busy;
+        saveButton.Enabled = !busy;
+        playButton.Enabled = !busy;
+        if (backupButton != null) backupButton.Enabled = !busy;
+        if (restoreButton != null) restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0;
+        if (importFolderButton != null) importFolderButton.Enabled = !busy;
+        if (importZipButton != null) importZipButton.Enabled = !busy;
+        if (exportButton != null) exportButton.Enabled = !busy;
+        if (refreshSaveButton != null) refreshSaveButton.Enabled = !busy;
+        if (renameCharacterButton != null)
+            renameCharacterButton.Enabled = !busy && characterList.SelectedItems.Count > 0;
+    }
+    void OnClosing(object sender, FormClosingEventArgs e) {
+        if (!busy || launcherProcess == null) return;
+        if (MessageBox.Show(this, "游戏启动器仍在运行。关闭窗口不会强制结束游戏，确定关闭吗？", TitleText,
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) e.Cancel = true;
+    }
+}
+
+} // namespace BbportPortable
