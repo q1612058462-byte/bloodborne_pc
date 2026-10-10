@@ -49,6 +49,13 @@ if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/img
     git submodule update --init --recursive
 fi
 for patch in gpu/patches/fsr-vulkan/*.patch; do
+    # Portable bundles can contain an already-patched FSR tree whose detached
+    # .git file no longer resolves.  MSYS git cannot always reverse-check that
+    # copied CRLF tree, so recognize this patch's stable source marker first.
+    if [[ $(basename "$patch") == 0001-FSR-4-v07-* ]] &&
+       grep -q '^#define PROF_MAX_JOBS' gpu/third_party/fsr-vulkan/src/ffx_vk_fsr4_v07.c; then
+        continue
+    fi
     if git -C gpu/third_party/fsr-vulkan rev-parse --git-dir >/dev/null 2>&1; then
         if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
             git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
@@ -120,6 +127,11 @@ echo "Built $PWD/out/bb-probe"
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
 fi
 if [[ ${1:-} == --test ]]; then
+    network_libraries=()
+    if [[ -n $windows ]]; then network_libraries=(-lws2_32); fi
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
+        tests/test_network.c src/runtime_network.c "${network_libraries[@]}" -o out/network-test
+    out/network-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
     out/pad-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
