@@ -131,7 +131,7 @@ $buildInfo = @(
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
     'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
-    'Local preview: native bbport LAN transport, NP identity and Matching2 lifecycle without launching shadPS4'
+    'Local preview: native bbport LAN room discovery, join/leave, Matching2 callbacks and peer signaling without launching shadPS4'
     'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'
     'Local feature: pre-launch game integrity checks and optional Old Hunters entitlement folder'
     ('bb-probe SHA256: ' + $probeHash)

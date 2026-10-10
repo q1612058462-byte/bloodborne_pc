@@ -712,7 +712,7 @@ sealed class MainForm : Form {
                 selected == "shadp2p" ? "启动 shadp2p 联机" : "启动游戏";
             if (saveRootBox != null) RefreshSaveManager();
         };
-        AddSpan(core, Note("原生局域网直接使用 bbport，当前已完成网络传输、NP 登录和 Matching2 上下文，房间发现／加入与信令仍在开发；shadp2p 是可实际联机的独立上游模拟器核心。"));
+        AddSpan(core, Note("原生局域网直接使用 bbport，现已接通房间创建／发现／加入／离开、成员回调与对端信令地址；已通过同机双端协议测试，仍需两台电脑实机验证铃铛与 P2P 游戏数据。shadp2p 是可实际联机的独立上游模拟器核心。"));
         column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
@@ -788,7 +788,7 @@ sealed class MainForm : Form {
         lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
         AddSpan(lanConnection, lanSeamless);
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
-        AddSpan(lanConnection, Note("原生局域网开发预览目前只读取“联机 ID”，不使用这里的 shadNet 地址、密码和注册邮箱；它暂时用于验证游戏能进入原生在线初始化流程。"));
+        AddSpan(lanConnection, Note("原生局域网开发预览只读取“联机 ID”，不使用这里的 shadNet 地址、密码和注册邮箱；两台电脑需处于同一局域网，并允许 UDP 31314（发现）和 UDP 31316（P2P）通过 Windows 防火墙。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
         TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
@@ -1727,6 +1727,7 @@ sealed class MainForm : Form {
         options.Env["BB_MOUSE_WHEEL_DOWN"] = Value(mouseWheelDown);
         options.Env["BB_NETWORK_MODE"] = options.NativeLan ? "lan" : "";
         options.Env["BB_LAN_NPID"] = options.NativeLan ? options.LanNpid : "";
+        options.Env["BB_P2P_PORT"] = options.NativeLan ? "31316" : "";
         List<string> enabledCheats = new List<string>();
         foreach (string[] definition in CheatDefinitions)
             if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);

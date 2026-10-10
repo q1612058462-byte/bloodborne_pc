@@ -97,7 +97,7 @@ if ! ninja "${ninja_jobs[@]}" -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
 fi
 # $ORIGIN/gpu: packaged copies keep the library next to the binary without patching it.
 gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,'$ORIGIN/gpu' -Wl,-rpath,"$PWD/out/gpu" -rdynamic)
-runtime=(src/runtime*.c)
+runtime=(src/runtime*.c src/lan_match.c)
 link=(-no-pie)
 if [[ -n $windows ]]; then
     # out/gpu/bbgpu_link.txt (gpu/CMakeLists.txt): libbbgpu.a and its dependencies, one per line.
@@ -133,8 +133,14 @@ if [[ ${1:-} == --test ]]; then
         tests/test_network.c src/runtime_network.c "${network_libraries[@]}" -o out/network-test
     out/network-test
     "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
-        tests/test_np_lan.c src/runtime_np_lan.c -o out/np-lan-test
+        tests/test_lan_match.c src/lan_match.c "${network_libraries[@]}" -o out/lan-match-test
+    out/lan-match-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
+        tests/test_np_lan.c src/runtime_np_lan.c src/lan_match.c "${network_libraries[@]}" -o out/np-lan-test
     out/np-lan-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
+        tests/test_np_lan_client.c src/runtime_np_lan.c src/lan_match.c "${network_libraries[@]}" -o out/np-lan-client-test
+    out/np-lan-client-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
     out/pad-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test

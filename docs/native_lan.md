@@ -14,18 +14,35 @@ development.
   signed-in state, including the state callback.
 - Matching2 initialization, context start/stop callbacks and the single LAN
   world needed before room matchmaking begins.
+- A small versioned LAN discovery protocol on UDP 31314: room query,
+  announcement, join request, join acknowledgement and leave notification.
+- Matching2 create/search/join/leave request callbacks, member joined/left room
+  callbacks, and signaling-established callbacks.
+- Searchable integer attributes and the first searchable binary attribute are
+  carried with room announcements, so Bloodborne can identify compatible
+  rooms instead of receiving an empty shell.
+- `sceNpMatching2SignalingGetConnectionStatus` reports the peer's IPv4 address
+  and fixed P2P UDP port after the join handshake.
 - P2P UDP framing compatible with Wozzardman/shadp2p commit `6e97b404`:
   two network-order virtual ports followed by the guest payload.
-- `BB_P2P_PORT=<port>` can pin the host UDP port; otherwise the operating
-  system chooses a free port.
+- `BB_P2P_PORT=<port>` pins the host UDP port. The launcher uses 31316 for the
+  native LAN preview so the address advertised during matching is the same
+  one used by the guest P2P socket.
+- `BB_LAN_DISCOVERY_TARGET`, `BB_LAN_DISCOVERY_PORT`, and the optional
+  `BB_LAN_DISCOVERY_TARGET_PORT` can override the broadcast target, local
+  discovery port, and destination port for diagnostics. Production defaults
+  are `255.255.255.255` and 31314 for both ports.
 
-`build.sh --test` performs real loopback UDP tests for normal datagrams,
-readiness notification, and P2P virtual-port framing. A sandbox that blocks
-loopback networking must run that test outside the sandbox.
+`build.sh --test` performs real two-endpoint loopback tests for normal
+datagrams, P2P framing, room discovery, join acknowledgement, Matching2 member
+events, and signaling address lookup. A sandbox that blocks loopback
+networking must run those tests outside the sandbox.
 
 ## Not implemented yet
 
-This layer alone does not make Bloodborne's bells or messages functional.
-The game still needs NP Matching2 room discovery/join callbacks and
-signaling/peer routing. Those layers will be added on top of this transport
-rather than embedding or launching the full shadPS4 emulator.
+The matching and signaling path is now present, but this remains a development
+preview rather than a claim of playable co-op. The next validation is a real
+two-PC Bloodborne bell test. Any additional game-observed Matching2 calls,
+attribute semantics, or P2P socket behavior found there must be implemented
+from the captured logs. This path does not embed or launch the full shadPS4
+emulator.
