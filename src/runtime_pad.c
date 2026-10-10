@@ -499,9 +499,33 @@ static void replay_sample(PadData *d) {
     d->left_x=s->axes[0]; d->left_y=s->axes[1]; d->right_x=s->axes[2]; d->right_y=s->axes[3];
     d->l2=s->l2; d->r2=s->r2;
 }
+/* DualShock 4 touch samples keep a non-zero id for the lifetime of each contact and report
+ * how long the oldest contact has been held. Bloodborne ignores synthetic touchpad presses
+ * whose id and hold time stay zero, which made the gesture/personal-effects menus unreliable
+ * for Tab, Back/Select and remapped touchpad buttons. */
+static void touch_ids(PadData *d) {
+    static uint8_t next_id=1, ids[2];
+    static int down[2];
+    static uint64_t since;
+    for (int i=0;i<2;++i) {
+        const int now=i<d->touch_count;
+        if (now && !down[i]) {
+            ids[i]=next_id;
+            next_id=next_id==127 ? 1 : (uint8_t)(next_id+1);
+        }
+        down[i]=now;
+        if (now) d->touches[i].id=ids[i];
+    }
+    if (!d->touch_count) since=0;
+    else if (!since) since=d->timestamp;
+    d->touch_held_time=d->touch_count ? (uint32_t)(d->timestamp-since) : 0;
+}
 static void sample(PadData *d) {
     sample_host(d);
-    if (bbgpu_overlay_captures_input()) return;
+    if (bbgpu_overlay_captures_input()) {
+        touch_ids(d); /* also releases the previous synthetic contact */
+        return;
+    }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -512,6 +536,7 @@ static void sample(PadData *d) {
     if (injected.buttons & BTN_R2) d->r2=255;
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
     for (int i=0;i<4;++i) if (injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
+    touch_ids(d);
 }
 
 static ABI int32_t pad_init(void) { host_lock(&lock); initialized=1; host_unlock(&lock); return 0; }

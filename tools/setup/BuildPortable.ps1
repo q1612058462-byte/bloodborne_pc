@@ -131,6 +131,8 @@ $buildInfo = @(
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
     'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
+    'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'
+    'Local feature: pre-launch game integrity checks and optional Old Hunters entitlement folder'
     ('bb-probe SHA256: ' + $probeHash)
     ('Packaged at: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
 ) -join "`r`n"

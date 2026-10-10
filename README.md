@@ -211,7 +211,9 @@ pass), `BB_FSR4_PROFILE=1` (GPU time per FSR 4 pass), `BB_UPSCALER=taa|fsr3|fsr4
 0 = unbounded), `BB_PRESENT_THREAD=0` (present on the vblank thread, as before),
 `BB_LIVE_RES=1` (live resolution changes instead of the startup patch for outputs other than 1080p),
 `BB_PAD_RECORD=file` / `BB_PAD_REPLAY=file` (record a route with F9, replay it in scripted tests),
-`BB_GC_BUDGET_MB=N` (texture cache budget, as on integrated GPUs), `BB_PRESENT_DUMP_TRIGGER=file`
+`BB_GC_BUDGET_MB=N` (texture cache budget, as on integrated GPUs),
+`BB_GC_IDLE_SECONDS=N` (1–63 seconds, texture idle age; 20 by default),
+`BB_SAVE_TRACE=1` (atomic save transaction diagnostics), `BB_PRESENT_DUMP_TRIGGER=file`
 with `BB_PRESENT_DUMP_COUNT=N` (dump N consecutive presented frames).
 More in [docs/](docs); recent changes: [docs/CHANGES_2026-10-02.md](docs/CHANGES_2026-10-02.md),
 [docs/CHANGES_2026-10-03.md](docs/CHANGES_2026-10-03.md).
@@ -273,6 +275,12 @@ GPU page tracking and crash reports run in a vectored exception handler; the gue
 pointer lives in a TEB TLS slot (`patch_tls_reads` in `src/probe.c`); `src/win32_compat.c`
 covers file system and time zone details. With libc++ on Windows, `std::thread::get_id()` and
 `std::jthread::joinable()` ask the kernel (`GetThreadId`): hot paths keep their own flags.
+
+The Windows launcher validates the supported CUSA03173 v1.09 executable and the first shader
+bundle before linking, so a wrong update or damaged extraction fails with an actionable message.
+Save and shader-cache writes use a flushed temporary file followed by an atomic replacement.
+The optional Old Hunters switch creates the shadPS4-compatible entitlement folder at
+`<player data>/addcont/CUSA03173/SPEXPANSIONDLC03`; it does not provide game or DLC data.
 
 ## Repository layout
 

@@ -60,6 +60,7 @@ sealed class LaunchOptions {
     public string LanEmail;
     public string LanSecret;
     public bool AutoBackup;
+    public bool OldHunters;
     public bool DesktopLink;
     public bool StartMenuLink;
     public readonly Dictionary<string, string> Ini = new Dictionary<string, string>();
@@ -532,7 +533,7 @@ sealed class MainForm : Form {
     ComboBox coreMode;
     ComboBox resolution, frameRate, upscaler, preset, live, modelLod, language, presentMode;
     ComboBox qualityProfile;
-    CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink;
+    CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink, oldHunters;
     CheckBox mouseEnabled, mouseInvert;
     NumericUpDown mouseSensitivity;
     ComboBox mouseLeft, mouseRight, mouseMiddle, mouseX1, mouseX2, mouseWheelUp, mouseWheelDown;
@@ -752,6 +753,12 @@ sealed class MainForm : Form {
         }
         AddSpan(effectGroup, effectGrid);
         column.Controls.Add(effectGroup.Parent);
+
+        TableLayoutPanel content = Group("游戏内容", 2);
+        oldHunters = Check("启用《老猎人》DLC 授权（需要自己的 DLC／年度版游戏）");
+        AddSpan(content, oldHunters);
+        AddSpan(content, Note("CUSA03173 1.09 的 DLC 数据已包含在更新中；该选项只创建游戏识别授权所需的兼容目录，不下载或提供任何游戏文件。"));
+        column.Controls.Add(content.Parent);
 
         TableLayoutPanel extras = Group("语言与快捷方式", 2);
         language = Combo(extras, "游戏语言", Languages);
@@ -1156,6 +1163,8 @@ sealed class MainForm : Form {
         gameBox.Text = Get(state, "game_dir", "");
         saveRootBox.Text = Get(state, "save_root", SaveTools.DefaultRoot);
         autoBackup.Checked = Get(state, "auto_backup", "1") == "1";
+        string oldHuntersPath = Path.Combine(saveRootBox.Text, "addcont", "CUSA03173", "SPEXPANSIONDLC03");
+        oldHunters.Checked = Directory.Exists(oldHuntersPath) || Get(state, "old_hunters", "0") == "1";
         SelectValue(coreMode, Get(state, "core_mode", "native"));
         lanAddressBox.Text = Get(state, "lan_address", LocalLanAddress());
         lanNpidBox.Text = Get(state, "lan_npid", "");
@@ -1675,6 +1684,7 @@ sealed class MainForm : Form {
         options.LanEmail = lanEmailBox.Text.Trim();
         options.LanSecret = lanSecretBox.Text;
         options.AutoBackup = autoBackup.Checked;
+        options.OldHunters = oldHunters.Checked;
         options.DesktopLink = desktopLink.Checked;
         options.StartMenuLink = startMenuLink.Checked;
         options.Ini["upscaler"] = Value(upscaler);
@@ -2074,6 +2084,7 @@ sealed class MainForm : Form {
 
     void Configure(LaunchOptions options, bool shortcuts) {
         Directory.CreateDirectory(Path.Combine(options.Root, "out"));
+        ConfigureAddons(options);
         WriteIni(Path.Combine(options.Root, "bbport.ini"), options.Ini);
         File.WriteAllText(Path.Combine(options.Root, "out", "game_dir.txt"), options.Game, new UTF8Encoding(false));
         Dictionary<string, string> state = new Dictionary<string, string>();
@@ -2081,6 +2092,7 @@ sealed class MainForm : Form {
         state["game_dir"] = options.Game;
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
+        state["old_hunters"] = options.OldHunters ? "1" : "0";
         state["core_mode"] = options.LanMode ? "shadp2p" : "native";
         state["lan_address"] = options.LanAddress;
         state["lan_npid"] = options.LanNpid;
@@ -2105,6 +2117,17 @@ sealed class MainForm : Form {
         if (options.LanMode && File.Exists(Path.Combine(options.Root, "shadp2p", "client", "shadPS4.exe")))
             ConfigureLanClient(options);
         Log("设置已保存：" + Path.Combine(options.Root, "bbport.ini"));
+    }
+
+    void ConfigureAddons(LaunchOptions options) {
+        string path = Path.Combine(options.SaveRoot, "addcont", "CUSA03173", "SPEXPANSIONDLC03");
+        if (options.OldHunters) {
+            Directory.CreateDirectory(path);
+            Log("已启用《老猎人》DLC 授权目录：" + path);
+        } else if (Directory.Exists(path) && Directory.GetFileSystemEntries(path).Length == 0) {
+            // Only remove the empty marker created by this launcher. Never remove a user's dump.
+            Directory.Delete(path, false);
+        }
     }
 
     static void WriteIni(string path, Dictionary<string, string> values) {

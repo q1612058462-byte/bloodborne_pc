@@ -248,6 +248,13 @@ def main():
     if not os.path.isfile(os.path.join(base, game, 'eboot.bin')):
         sys.exit(f'No eboot.bin in {game} (pass --game-dir or set BB_GAME_DIR).')
     original = Path(base, game).resolve()
+    # Fail before patching/linking when the dump is the wrong revision or has silently damaged
+    # compressed shader files. This replaces later hangs and address-dependent crashes with an
+    # actionable diagnosis; BB_SKIP_GAME_CHECK=1 is retained for developers.
+    from game_check import explain as explain_game_problem, problem as game_problem
+    validation_problem = game_problem(original)
+    if validation_problem:
+        sys.exit(f'Game check failed: {explain_game_problem(*validation_problem)}')
     if WINDOWS:
         # The last folder that worked is remembered, so run.bat alone starts the game afterwards.
         Path(remembered).write_text(str(original), encoding='utf-8')

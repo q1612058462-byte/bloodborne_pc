@@ -69,10 +69,19 @@ int main(void) {
     assert(input.cross==SDL_SCANCODE_B && input.triangle==SDL_SCANCODE_UNKNOWN && input.mouse_invert_y);
     assert((data.buttons & (BTN_CROSS|BTN_L3|BTN_TOUCHPAD))==(BTN_CROSS|BTN_L3|BTN_TOUCHPAD));
     assert(data.touch_count==1 && data.touches[0].x==480 && data.touches[0].y==471);
+    assert(data.touches[0].id!=0);
+    uint8_t first_touch_id=data.touches[0].id;
+    usleep(2000);
+    assert(pad_read_state(1,&data)==0 && data.touches[0].id==first_touch_id && data.touch_held_time>0);
     inject(path,"touchpad_right");
-    assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==1440);
+    assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==1440 &&
+           data.touches[0].id==first_touch_id);
     inject(path,"");
     assert(pad_read_state(1,&data)==0 && data.buttons==0 && data.touch_count==0);
+    inject(path,"touchpad_left");
+    assert(pad_read_state(1,&data)==0 && data.touches[0].id!=first_touch_id);
+    inject(path,"");
+    assert(pad_read_state(1,&data)==0 && data.touch_count==0);
     mouse_owned=1; mouse_dx=10; mouse_dy=-4; mouse_buttons=1;
     assert(pad_read_state(1,&data)==0);
     assert((data.buttons & BTN_R1) && data.right_x==148 && data.right_y==136);
@@ -119,8 +128,9 @@ int main(void) {
     mouse_buttons=1u<<2;
     assert(pad_read_state(1,&data)==0);
     assert(gamepad && data.touch_count==2 && (data.buttons & BTN_TOUCHPAD) && (data.buttons & BTN_SQUARE));
-    assert(data.touches[0].x==1439 && data.touches[0].y==471 && data.touches[0].id==0);
-    assert(data.touches[1].x==480 && data.touches[1].y==942 && data.touches[1].id==1);
+    assert(data.touches[0].x==1439 && data.touches[0].y==471 && data.touches[0].id!=0);
+    assert(data.touches[1].x==480 && data.touches[1].y==942 && data.touches[1].id!=0);
+    assert(data.touches[0].id!=data.touches[1].id);
     assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));
     SDL_UpdateJoysticks();
     SDL_UpdateGamepads();
