@@ -52,6 +52,7 @@ sealed class LaunchOptions {
     public string Game;
     public string SaveRoot;
     public bool LanMode;
+    public bool NativeLan;
     public bool LanHost;
     public bool LanSeamless;
     public string LanAddress;
@@ -449,6 +450,7 @@ sealed class MainForm : Form {
         new Choice("中（1080p／均衡）", "medium"), new Choice("高（1440p／质量优先）", "high") };
     static readonly Choice[] CoreModes = {
         new Choice("原生单机核心（bbport）", "native"),
+        new Choice("原生局域网（bbport，开发预览）", "native_lan"),
         new Choice("局域网联机核心（shadp2p，实验性）", "shadp2p") };
     static readonly string[][] CheatDefinitions = {
         new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
@@ -705,11 +707,12 @@ sealed class MainForm : Form {
         TableLayoutPanel core = Group("启动核心", 2);
         coreMode = Combo(core, "运行模式", CoreModes);
         coreMode.SelectedIndexChanged += delegate {
-            bool lan = Value(coreMode) == "shadp2p";
-            playButton.Text = lan ? "启动局域网游戏" : "启动游戏";
+            string selected = Value(coreMode);
+            playButton.Text = selected == "native_lan" ? "启动原生局域网预览" :
+                selected == "shadp2p" ? "启动 shadp2p 联机" : "启动游戏";
             if (saveRootBox != null) RefreshSaveManager();
         };
-        AddSpan(core, Note("原生核心保留当前画质、键鼠、手柄映射和金手指功能；shadp2p 使用独立的上游模拟器核心，只用于局域网联机。"));
+        AddSpan(core, Note("原生局域网直接使用 bbport，当前已完成网络传输、NP 登录和 Matching2 上下文，房间发现／加入与信令仍在开发；shadp2p 是可实际联机的独立上游模拟器核心。"));
         column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
@@ -785,6 +788,7 @@ sealed class MainForm : Form {
         lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
         AddSpan(lanConnection, lanSeamless);
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
+        AddSpan(lanConnection, Note("原生局域网开发预览目前只读取“联机 ID”，不使用这里的 shadNet 地址、密码和注册邮箱；它暂时用于验证游戏能进入原生在线初始化流程。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
         TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
@@ -1683,6 +1687,7 @@ sealed class MainForm : Form {
         options.Game = Path.GetFullPath(gameBox.Text.Trim().Trim('"'));
         options.SaveRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"'));
         options.LanMode = Value(coreMode) == "shadp2p";
+        options.NativeLan = Value(coreMode) == "native_lan";
         options.LanHost = lanHost.Checked;
         options.LanSeamless = lanSeamless.Checked;
         options.LanAddress = lanAddressBox.Text.Trim();
@@ -1720,6 +1725,8 @@ sealed class MainForm : Form {
         options.Env["BB_MOUSE_X2"] = Value(mouseX2);
         options.Env["BB_MOUSE_WHEEL_UP"] = Value(mouseWheelUp);
         options.Env["BB_MOUSE_WHEEL_DOWN"] = Value(mouseWheelDown);
+        options.Env["BB_NETWORK_MODE"] = options.NativeLan ? "lan" : "";
+        options.Env["BB_LAN_NPID"] = options.NativeLan ? options.LanNpid : "";
         List<string> enabledCheats = new List<string>();
         foreach (string[] definition in CheatDefinitions)
             if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);
@@ -1744,6 +1751,7 @@ sealed class MainForm : Form {
             Warn("请不要把玩家数据直接放在磁盘根目录。"); return false;
         }
         bool lanMode = Value(coreMode) == "shadp2p";
+        bool nativeLan = Value(coreMode) == "native_lan";
         string requiredCore = lanMode ? Path.Combine(root, "shadp2p", "client", "shadPS4.exe") :
             Path.Combine(root, "out", "bb-probe.exe");
         if (requireInstalled && !File.Exists(requiredCore)) {
@@ -1760,14 +1768,16 @@ sealed class MainForm : Form {
                 return false;
             }
         }
+        if (lanMode || nativeLan) {
+            if (!Regex.IsMatch(lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
+                Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
+            }
+        }
         if (lanMode) {
             string host;
             int port;
             if (!TryParseLanEndpoint(lanAddressBox.Text, out host, out port)) {
                 Warn("局域网服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
-            }
-            if (!Regex.IsMatch(lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
-                Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
             }
             if (lanPasswordBox.Text.Length == 0) { Warn("请输入联机账号密码。"); return false; }
         }
@@ -2157,7 +2167,7 @@ sealed class MainForm : Form {
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
         state["old_hunters"] = options.OldHunters ? "1" : "0";
-        state["core_mode"] = options.LanMode ? "shadp2p" : "native";
+        state["core_mode"] = options.LanMode ? "shadp2p" : options.NativeLan ? "native_lan" : "native";
         state["lan_address"] = options.LanAddress;
         state["lan_npid"] = options.LanNpid;
         state["lan_password_dpapi"] = ProtectSecret(options.LanPassword);
@@ -2262,13 +2272,13 @@ sealed class MainForm : Form {
     void StartGame() {
         if (!CheckInputs(true)) return;
         LaunchOptions options = Collect();
-        if (options.LanMode) {
+        if (options.LanMode || options.NativeLan) {
             string titleId = SaveTools.ReadTitleId(options.Game);
             if (!titleId.Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
                 string shown = titleId.Length == 0 ? "无法识别" : titleId;
                 if (MessageBox.Show(this, "当前游戏区域为“" + shown + "”。\r\n\r\n" +
-                    "shadp2p 官方目前只确认 CUSA03173 1.09 可联机；其他区域可能无法登录、匹配或进入游戏。仍要继续吗？",
-                    "shadp2p 兼容性提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    "当前联机实现只以 CUSA03173 1.09 为验证目标；其他区域可能无法登录、匹配或进入游戏。仍要继续吗？",
+                    "联机兼容性提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                     return;
             }
         }
@@ -2425,6 +2435,7 @@ sealed class MainForm : Form {
             capture("Runtime: " + options.Root);
             capture("Game: " + options.Game);
             capture("Player data: " + options.SaveRoot);
+            if (options.NativeLan) capture("Native LAN preview: enabled; NPID=" + options.LanNpid);
             ProcessStartInfo info = new ProcessStartInfo(python,
                 "\"" + script + "\" --game-dir \"" + options.Game + "\"") {
                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = options.Root,

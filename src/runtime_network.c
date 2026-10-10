@@ -210,7 +210,7 @@ static ABI int32_t net_init(void) {
     if (WSAStartup(MAKEWORD(2,2),&data)) return fail_native();
 #endif
     network_initialized=1;
-    puts("Runtime: native LAN transport enabled (Matching2/signaling not yet enabled)");
+    puts("Runtime: native LAN transport enabled (room matching/signaling still in development)");
     return 0;
 }
 

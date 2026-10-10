@@ -10,6 +10,10 @@ development.
 - Bind, connect, listen, accept, send/receive, socket options and DNS lookup.
 - `sceNetEpoll*` readiness events (`WSAPoll` on Windows, `select` elsewhere).
 - Online `sceNetCtl` state for the opted-in process.
+- A configurable local NP identity (`BB_LAN_NPID`, default `Hunter01`) and
+  signed-in state, including the state callback.
+- Matching2 initialization, context start/stop callbacks and the single LAN
+  world needed before room matchmaking begins.
 - P2P UDP framing compatible with Wozzardman/shadp2p commit `6e97b404`:
   two network-order virtual ports followed by the guest payload.
 - `BB_P2P_PORT=<port>` can pin the host UDP port; otherwise the operating
@@ -22,6 +26,6 @@ loopback networking must run that test outside the sandbox.
 ## Not implemented yet
 
 This layer alone does not make Bloodborne's bells or messages functional.
-The game still needs the shadNet login/session protocol, NP Matching2 room
-callbacks, and signaling/peer routing. Those layers will be added on top of
-this transport rather than embedding or launching the full shadPS4 emulator.
+The game still needs NP Matching2 room discovery/join callbacks and
+signaling/peer routing. Those layers will be added on top of this transport
+rather than embedding or launching the full shadPS4 emulator.

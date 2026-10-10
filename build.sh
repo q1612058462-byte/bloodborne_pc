@@ -132,6 +132,9 @@ if [[ ${1:-} == --test ]]; then
     "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
         tests/test_network.c src/runtime_network.c "${network_libraries[@]}" -o out/network-test
     out/network-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
+        tests/test_np_lan.c src/runtime_np_lan.c -o out/np-lan-test
+    out/np-lan-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
     out/pad-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
