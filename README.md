@@ -279,6 +279,8 @@ covers file system and time zone details. With libc++ on Windows, `std::thread::
 The Windows launcher validates the supported CUSA03173 v1.09 executable and the first shader
 bundle before linking, so a wrong update or damaged extraction fails with an actionable message.
 Save and shader-cache writes use a flushed temporary file followed by an atomic replacement.
+Startup-patched 720p/1080p outputs keep the native 5056 MiB direct-memory budget; 1440p/4K use
+9152 MiB for their larger render targets. `BB_DMEM_MB` remains an explicit override.
 The optional Old Hunters switch creates the shadPS4-compatible entitlement folder at
 `<player data>/addcont/CUSA03173/SPEXPANSIONDLC03`; it does not provide game or DLC data.
 
