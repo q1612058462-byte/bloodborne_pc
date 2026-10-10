@@ -975,15 +975,22 @@ sealed class MainForm : Form {
         TableLayoutPanel versionColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill,
             Padding = new Padding(S(4)) };
         versionColumn.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        versionColumn.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         versionColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Label versionLabel = new Label { AutoSize = true, Dock = DockStyle.Fill,
-            Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 0, 0, S(8)),
+            Font = new Font(Font.FontFamily, 12f, FontStyle.Bold), Padding = new Padding(0, 0, 0, S(4)),
             Text = "当前安装包版本：v" + (PackageVersion.Length == 0 ? "未知" : PackageVersion) };
-        TextBox notes = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
-            WordWrap = true, Dock = DockStyle.Fill, BackColor = SystemColors.Window,
-            Text = ReleaseNotes.Length == 0 ? "内置更新说明无法读取。" : ReleaseNotes };
+        Label versionHint = new Label { AutoSize = true, Dock = DockStyle.Fill,
+            ForeColor = SystemColors.GrayText, Padding = new Padding(0, 0, 0, S(8)),
+            Text = "最新版本置顶；每条改动单独显示，向下滚动可查看历次更新。" };
+        RichTextBox notes = new RichTextBox { ReadOnly = true,
+            ScrollBars = RichTextBoxScrollBars.Vertical, WordWrap = true, Dock = DockStyle.Fill,
+            BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle, DetectUrls = false,
+            Font = new Font(Font.FontFamily, 9.5f, FontStyle.Regular) };
+        FormatReleaseNotes(notes);
         versionColumn.Controls.Add(versionLabel, 0, 0);
-        versionColumn.Controls.Add(notes, 0, 1);
+        versionColumn.Controls.Add(versionHint, 0, 1);
+        versionColumn.Controls.Add(notes, 0, 2);
         versionPage.Controls.Add(versionColumn);
 
         logBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
@@ -1995,7 +2002,64 @@ sealed class MainForm : Form {
         Log("已把旧运行环境的存档复制到独立玩家数据目录：" + options.SaveRoot);
     }
 
+    void FormatReleaseNotes(RichTextBox notes) {
+        string source = ReleaseNotes.Length == 0 ? "内置更新说明无法读取。" : ReleaseNotes;
+        notes.Text = source.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+
+        Font titleFont = new Font(Font.FontFamily, 13f, FontStyle.Bold);
+        Font headingFont = new Font(Font.FontFamily, 10.5f, FontStyle.Bold);
+        Font bodyFont = new Font(Font.FontFamily, 9.5f, FontStyle.Regular);
+        string[] lines = notes.Lines;
+        for (int i = 0; i < lines.Length; ++i) {
+            int start = notes.GetFirstCharIndexFromLine(i);
+            if (start < 0) continue;
+            int length = lines[i].Length;
+            notes.Select(start, length);
+            notes.SelectionFont = bodyFont;
+            notes.SelectionColor = SystemColors.WindowText;
+            notes.SelectionBackColor = SystemColors.Window;
+            notes.SelectionIndent = 0;
+            notes.SelectionRightIndent = 0;
+
+            if (i == 0) {
+                notes.SelectionFont = titleFont;
+                notes.SelectionColor = Color.FromArgb(88, 24, 24);
+            } else if (Regex.IsMatch(lines[i], @"^v\d+\.\d+\.\d+")) {
+                notes.SelectionFont = headingFont;
+                bool current = PackageVersion.Length > 0 && lines[i].StartsWith("v" + PackageVersion,
+                    StringComparison.OrdinalIgnoreCase);
+                notes.SelectionColor = current ? Color.FromArgb(142, 42, 34) : Color.FromArgb(45, 75, 110);
+                if (current) notes.SelectionBackColor = Color.FromArgb(255, 248, 225);
+            } else if (lines[i].StartsWith("- ", StringComparison.Ordinal)) {
+                notes.SelectionIndent = S(14);
+                notes.SelectionRightIndent = S(8);
+            } else if (lines[i].StartsWith("版本规则", StringComparison.Ordinal)) {
+                notes.SelectionFont = headingFont;
+            }
+        }
+        notes.Select(0, 0);
+        notes.ScrollToCaret();
+    }
+
+    bool ConfirmInstallRequirements() {
+        string message =
+            "玩家版建议最低配置（低于此配置仍可能运行，但不保证稳定）：\r\n\r\n" +
+            "• 显卡：至少 4 GB 显存\r\n" +
+            "• 内存：至少 16 GB\r\n" +
+            "• Windows 虚拟内存：至少 16 GB\r\n\r\n" +
+            "Windows 虚拟内存设置方法：\r\n" +
+            "1. 按 Win + R，输入 sysdm.cpl 并回车。\r\n" +
+            "2. 打开“高级”→“性能”下的“设置”→“高级”。\r\n" +
+            "3. 在“虚拟内存”处点“更改”。\r\n" +
+            "4. 推荐勾选“自动管理所有驱动器的分页文件大小”；也可自定义为初始值 16384 MB、最大值 32768 MB。\r\n" +
+            "5. 保存设置并重启 Windows。\r\n\r\n" +
+            "是否继续安装／更新运行环境？";
+        return MessageBox.Show(this, message, "安装前配置提示", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+    }
+
     void StartInstall() {
+        if (!ConfirmInstallRequirements()) return;
         if (!CheckInputs(false)) return;
         LaunchOptions options = Collect();
         busy = true;
