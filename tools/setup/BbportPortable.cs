@@ -1728,6 +1728,7 @@ sealed class MainForm : Form {
         options.Env["BB_NETWORK_MODE"] = options.NativeLan ? "lan" : "";
         options.Env["BB_LAN_NPID"] = options.NativeLan ? options.LanNpid : "";
         options.Env["BB_P2P_PORT"] = options.NativeLan ? "31316" : "";
+        options.Env["BB_NETWORK_TRACE"] = options.NativeLan ? "1" : "";
         List<string> enabledCheats = new List<string>();
         foreach (string[] definition in CheatDefinitions)
             if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);

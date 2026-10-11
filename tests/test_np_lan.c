@@ -35,6 +35,15 @@ typedef int32_t(ABI *RegisterRoom)(uint16_t,void(ABI *)(uint16_t,uint64_t,uint16
 typedef int32_t(ABI *RegisterSignal)(uint16_t,void(ABI *)(uint16_t,uint64_t,uint16_t,uint16_t,int32_t,void*),void*);
 typedef int32_t(ABI *SignalStatus)(uint16_t,uint64_t,uint16_t,int32_t*,void*,uint16_t*);
 typedef int32_t(ABI *Terminate)(void);
+typedef int32_t(ABI *RegisterPlus)(void*,void*);
+typedef int32_t(ABI *LookupCreateTitle)(const void*);
+typedef int32_t(ABI *LookupCreateRequest)(int32_t,const void*);
+typedef int32_t(ABI *LookupNpId)(int32_t,const OnlineId*,NpId*,const void*);
+typedef int32_t(ABI *LookupPoll)(int32_t,int32_t*);
+typedef int32_t(ABI *SignalingInitialize)(int64_t,int32_t,int32_t,int64_t);
+typedef int32_t(ABI *SignalingCreate)(const NpId*,void*,void*,int32_t*);
+typedef int32_t(ABI *SignalingActivate)(int32_t,const NpId*,int32_t*);
+typedef int32_t(ABI *LegacySignalStatus)(int32_t,int32_t,uint32_t*,uint32_t*,uint16_t*);
 typedef struct{uint16_t id;uint8_t padding[2];uint32_t num;}IntAttr;
 typedef struct{uint16_t id;uint8_t padding[6];uint8_t*data;uint64_t size;}BinAttr;
 typedef struct{
@@ -85,6 +94,21 @@ int main(void){
     assert(get_state&&get_online&&register_state&&check);uint32_t state=0;OnlineId id={{0},0,{0}};
     assert(get_state(1,&state)==0&&state==2);assert(get_online(1,&id)==0&&!strncmp(id.data,"LanHunter",9));
     assert(register_state(state_cb,(void*)1)==0);assert(check()==0&&state_called==1);
+    RegisterPlus register_plus=(RegisterPlus)runtime_np_lan_resolve("sceNpRegisterPlusEventCallback");
+    LookupCreateTitle lookup_title=(LookupCreateTitle)runtime_np_lan_resolve("sceNpLookupCreateTitleCtx");
+    LookupCreateRequest lookup_request=(LookupCreateRequest)runtime_np_lan_resolve("sceNpLookupCreateAsyncRequest");
+    LookupNpId lookup_npid=(LookupNpId)runtime_np_lan_resolve("sceNpLookupNpId");LookupPoll lookup_poll=(LookupPoll)runtime_np_lan_resolve("sceNpLookupPollAsync");
+    assert(register_plus&&register_plus((void*)1,(void*)2)==0);int32_t lookup_context=lookup_title(&id);assert(lookup_context>0);
+    int32_t lookup_id=lookup_request(lookup_context,NULL),lookup_result=-1;NpId looked_up={0};assert(lookup_id>0);
+    assert(lookup_npid(lookup_id,&id,&looked_up,NULL)==0&&!strncmp(looked_up.handle.data,"LanHunter",9));assert(lookup_poll(lookup_id,&lookup_result)==0&&lookup_result==0);
+    SignalingInitialize signal_initialize=(SignalingInitialize)runtime_np_lan_resolve("sceNpSignalingInitialize");
+    SignalingCreate signal_create=(SignalingCreate)runtime_np_lan_resolve("sceNpSignalingCreateContext");
+    SignalingActivate signal_activate=(SignalingActivate)runtime_np_lan_resolve("sceNpSignalingActivateConnection");
+    LegacySignalStatus legacy_status=(LegacySignalStatus)runtime_np_lan_resolve("sceNpSignalingGetConnectionStatus");
+    assert(signal_initialize&&signal_create&&signal_activate&&legacy_status);assert(signal_initialize(0,0,0,0)==0);
+    int32_t signal_context=0,signal_connection=0;assert(signal_create(&looked_up,NULL,NULL,&signal_context)==0&&signal_context==1);
+    assert(signal_activate(signal_context,&looked_up,&signal_connection)==0&&signal_connection==1);uint32_t legacy_state=0,legacy_address=1;uint16_t legacy_port=1;
+    assert(legacy_status(signal_context,signal_connection,&legacy_state,&legacy_address,&legacy_port)==0&&legacy_state==1&&legacy_address==0&&legacy_port==0);
     uint64_t init[6]={0};init[4]=0x30;MatchingInit initialize=(MatchingInit)runtime_np_lan_resolve("sceNpMatching2Initialize");
     CreateContext create=(CreateContext)runtime_np_lan_resolve("sceNpMatching2CreateContext");RegisterContext register_context=(RegisterContext)runtime_np_lan_resolve("sceNpMatching2RegisterContextCallback");StartContext start=(StartContext)runtime_np_lan_resolve("sceNpMatching2ContextStart");
     assert(initialize&&create&&register_context&&start);assert(initialize(init)==0);uint16_t context=0;uint64_t parameter[5]={0};
