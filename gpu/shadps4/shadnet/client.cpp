@@ -657,7 +657,25 @@ void ShadNetClient::HandleLoginReply(const std::vector<u8>& payload) {
                 m_state = ShadNetState::FailureAuth;
                 break;
             }
-            LOG_ERROR(ShadNet, "Login rejected error code {}", static_cast<u8>(res.error));
+            const char* reason = "authentication failed";
+            switch (res.error) {
+            case ErrorType::LoginAlreadyLoggedIn:
+                reason = "account is already logged in; close the other client or use a unique NPID";
+                break;
+            case ErrorType::LoginInvalidUsername:
+                reason = "NPID is not registered on this server";
+                break;
+            case ErrorType::LoginInvalidPassword:
+                reason = "password is incorrect";
+                break;
+            case ErrorType::LoginInvalidToken:
+                reason = "saved login token is invalid";
+                break;
+            default:
+                break;
+            }
+            LOG_ERROR(ShadNet, "Login rejected: {} (error code {})", reason,
+                      static_cast<u8>(res.error));
             m_sem_authenticated.release();
             DoDisconnect();
         }

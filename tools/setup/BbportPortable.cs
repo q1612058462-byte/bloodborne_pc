@@ -1269,6 +1269,26 @@ sealed class MainForm : Form {
         return "127.0.0.1";
     }
 
+    static bool IsLocalLanEndpoint(string value) {
+        string host;
+        int ignoredPort;
+        if (!TryParseLanEndpoint(value, out host, out ignoredPort)) return false;
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        try {
+            IPAddress target;
+            if (IPAddress.TryParse(host, out target) && IPAddress.IsLoopback(target)) return true;
+            IPAddress[] targets = IPAddress.TryParse(host, out target)
+                ? new IPAddress[] { target } : Dns.GetHostAddresses(host);
+            IPAddress[] local = Dns.GetHostEntry(Dns.GetHostName()).AddressList;
+            foreach (IPAddress candidate in targets) {
+                if (IPAddress.IsLoopback(candidate)) return true;
+                foreach (IPAddress address in local)
+                    if (candidate.Equals(address)) return true;
+            }
+        } catch { }
+        return false;
+    }
+
     static bool TryParseLanEndpoint(string value, out string host, out int port) {
         host = "";
         port = 31313;
@@ -2332,6 +2352,18 @@ sealed class MainForm : Form {
         worker.Start();
     }
 
+    static string ShadNetLoginHint(string line) {
+        string lower = (line ?? "").ToLowerInvariant();
+        if (!lower.Contains("login rejected")) return null;
+        if (lower.Contains("already logged in") || lower.Contains("error code 6") || lower.EndsWith("code 6"))
+            return "联机诊断：此 NPID 已在其他客户端登录。请关闭旧游戏／旧模拟器，或为每台电脑注册不同的 NPID；必要时重启 shadNet。";
+        if (lower.Contains("not registered") || lower.Contains("error code 7") || lower.EndsWith("code 7"))
+            return "联机诊断：此 NPID 未在当前 shadNet 服务器注册，请在同一服务器重新注册账号。";
+        if (lower.Contains("password is incorrect") || lower.Contains("error code 8") || lower.EndsWith("code 8"))
+            return "联机诊断：联机密码错误，请重新输入该 NPID 在当前服务器上的密码。";
+        return "联机诊断：shadNet 拒绝登录，请检查 NPID、密码和服务器注册状态。";
+    }
+
     void RunLanGame(LaunchOptions options, string core) {
         string error = null;
         int exitCode = -1;
@@ -2368,12 +2400,15 @@ sealed class MainForm : Form {
             lastRunLog = logPath;
             Action<string> capture = delegate(string line) {
                 if (line == null) return;
+                string hint = ShadNetLoginHint(line);
                 lock (outputLock) {
                     runLog.WriteLine(line);
                     recent.Add(line);
+                    if (hint != null) { runLog.WriteLine(hint); recent.Add(hint); }
                     if (recent.Count > 240) recent.RemoveAt(0);
                 }
                 Log(line);
+                if (hint != null) Log(hint);
             };
             capture("Bloodborne PC shadp2p LAN launch log " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
             capture("Core: " + core);
@@ -2435,12 +2470,15 @@ sealed class MainForm : Form {
             lastRunLog = logPath;
             Action<string> capture = delegate(string line) {
                 if (line == null) return;
+                string hint = ShadNetLoginHint(line);
                 lock (outputLock) {
                     runLog.WriteLine(line);
                     recent.Add(line);
+                    if (hint != null) { runLog.WriteLine(hint); recent.Add(hint); }
                     if (recent.Count > 240) recent.RemoveAt(0);
                 }
                 Log(line);
+                if (hint != null) Log(hint);
             };
             capture("Bloodborne PC launch log " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
             capture("Runtime: " + options.Root);
@@ -2449,17 +2487,25 @@ sealed class MainForm : Form {
             if (options.NativeLan) {
                 capture("Native bbport online: enabled; server=" + options.LanAddress +
                     "; NPID=" + options.LanNpid + "; seamless=" + (options.LanSeamless ? "on" : "off"));
-                if (options.LanHost) {
+                string statusMessage = "";
+                bool online = CheckLanStatus(options.LanAddress, out statusMessage);
+                bool localEndpoint = IsLocalLanEndpoint(options.LanAddress);
+                if (!online && (options.LanHost || localEndpoint)) {
+                    if (!options.LanHost)
+                        capture("Native bbport online: local endpoint detected; starting bundled shadNet automatically");
                     string serverError = StartLanServerProcess(options);
                     if (serverError != null) throw new InvalidOperationException("本机 shadNet 启动失败：" + serverError);
+                    for (int attempt = 0; attempt < 10; ++attempt) {
+                        if (CheckLanStatus(options.LanAddress, out statusMessage)) { online = true; break; }
+                        Thread.Sleep(500);
+                    }
                 }
-                string statusMessage = "";
-                bool online = false;
-                for (int attempt = 0; attempt < (options.LanHost ? 10 : 1); ++attempt) {
-                    if (CheckLanStatus(options.LanAddress, out statusMessage)) { online = true; break; }
-                    if (options.LanHost) Thread.Sleep(500);
+                if (!online) {
+                    string localHint = localEndpoint
+                        ? " 地址指向本机，但内置服务器未能就绪；请检查 shadnet.exe、防火墙或注册密钥。"
+                        : " 请确认开服电脑已启动 shadNet，并检查防火墙和联机地址。";
+                    throw new IOException(statusMessage + localHint);
                 }
-                if (!online) throw new IOException(statusMessage + " 请检查服务器、防火墙和联机地址。");
                 capture("Native bbport online: shadNet WebAPI reachable");
             }
             ProcessStartInfo info = new ProcessStartInfo(python,
