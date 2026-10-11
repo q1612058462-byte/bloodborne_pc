@@ -561,6 +561,7 @@ sealed class MainForm : Form {
     volatile bool busy;
     Process launcherProcess;
     Process shadNetProcess;
+    readonly object shadNetLogLock = new object();
     string lastRunLog;
     string expectedProbeHash;
     readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
@@ -789,6 +790,7 @@ sealed class MainForm : Form {
         AddSpan(lanConnection, lanSeamless);
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
         AddSpan(lanConnection, Note("原生在线模式会实际登录这里填写的 shadNet 账号，并连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；联机 ID 与密码必须是该服务器已经注册的账号。"));
+        AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。诊断时可让服务端和所有客户端同时开启实验性无缝联机，以排除区域、等级和距离过滤。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
         TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
@@ -1465,6 +1467,14 @@ sealed class MainForm : Form {
             if (options.LanSecret.Length == 0) return "请填写服务器注册密钥。";
             Directory.CreateDirectory(directory);
             WriteShadNetConfig(Path.Combine(directory, "shadnet.cfg"), options);
+            string logDirectory = Path.Combine(options.Root, "logs");
+            Directory.CreateDirectory(logDirectory);
+            string serverLogPath = Path.Combine(logDirectory,
+                "shadnet-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".log");
+            File.WriteAllText(serverLogPath,
+                "shadNet server log " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss zzz") + "\r\n" +
+                "Mode: " + (options.LanSeamless ? "seamless" : "traditional") + "\r\n",
+                new UTF8Encoding(false));
             ProcessStartInfo info = new ProcessStartInfo(executable) {
                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -1473,10 +1483,16 @@ sealed class MainForm : Form {
             else info.EnvironmentVariables.Remove("SHADNET_BLOODBORNE_SEAMLESS_COOP");
             Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) {
-                if (e.Data != null) Log("[shadNet] " + e.Data);
+                if (e.Data != null) {
+                    Log("[shadNet] " + e.Data);
+                    AppendShadNetLog(serverLogPath, e.Data);
+                }
             };
             process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) {
-                if (e.Data != null) Log("[shadNet] " + e.Data);
+                if (e.Data != null) {
+                    Log("[shadNet] " + e.Data);
+                    AppendShadNetLog(serverLogPath, e.Data);
+                }
             };
             process.Exited += delegate {
                 if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
@@ -1495,8 +1511,16 @@ sealed class MainForm : Form {
                 lanStopServerButton.Enabled = true;
             });
             Log("本机 shadNet 已启动，监听 TCP 31313、UDP 31314、TCP 31315。");
+            Log("shadNet 服务端日志：" + serverLogPath);
             return null;
         } catch (Exception e) { return e.Message; }
+    }
+
+    void AppendShadNetLog(string path, string line) {
+        try {
+            lock (shadNetLogLock)
+                File.AppendAllText(path, line.Replace("\r", "") + "\r\n", new UTF8Encoding(false));
+        } catch { }
     }
 
     void StartLanServerFromUi() {
@@ -1828,6 +1852,12 @@ sealed class MainForm : Form {
                 Warn("shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
             }
             if (lanPasswordBox.Text.Length == 0) { Warn("请输入联机账号密码。"); return false; }
+            if (lanHost.Checked && !IsLocalLanEndpoint(lanAddressBox.Text)) {
+                Warn("已勾选“本机同时作为局域网服务器”，但服务器地址不是这台电脑。\r\n\r\n" +
+                     "远程客户端请取消该勾选，只填写开服电脑的地址；只有开服电脑才需要勾选。\r\n" +
+                     "当前服务器地址：" + lanAddressBox.Text.Trim());
+                return false;
+            }
         }
         return true;
     }

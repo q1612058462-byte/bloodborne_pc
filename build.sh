@@ -117,7 +117,7 @@ fi
 # Windows: the link includes the GPU library's link-time optimization (a minute or more), and
 # run.bat builds before every start, so an up-to-date executable is kept.
 if [[ -n $windows && -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe &&
-      -z $(find src gpu/bbgpu.h out/gpu/libbbgpu.a out/gpu/bbgpu_link.txt out/libatrac9.a build.sh \
+      -z $(find src gpu/bbgpu.h out/gpu/libbbgpu.a out/gpu/libbbnet.a out/gpu/bbgpu_link.txt out/libatrac9.a build.sh \
                tools/gpu_capabilities.c -newer out/bb-probe.exe -print -quit) ]]; then
     echo "Up to date: $PWD/out/bb-probe.exe"
 else

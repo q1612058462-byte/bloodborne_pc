@@ -12,6 +12,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -697,6 +698,37 @@ bool IsBloodborneSummonCreatePath(std::string_view path) {
     return path.find("/summon_messenger/create") != std::string_view::npos;
 }
 
+std::optional<size_t> BloodborneSummonResultCount(const HttpResponse& response) {
+    const auto root = nlohmann::json::parse(response.body.begin(), response.body.end(), nullptr,
+                                            false);
+    if (root.is_discarded() || !root.is_object()) {
+        return std::nullopt;
+    }
+    const auto list = root.find("SummonDataList");
+    if (list == root.end() || !list->is_array()) {
+        return std::nullopt;
+    }
+    return list->size();
+}
+
+void LogBloodborneSummonResult(const SendRequestPlan& plan, const HttpResponse& response) {
+    if (!IsBloodborneSummonPath(plan.path)) {
+        return;
+    }
+    if (const auto count = BloodborneSummonResultCount(response)) {
+        LOG_INFO(Lib_Http,
+                 "Bloodborne summon HTTP: {} {}://{}:{}{} -> status={}, response_bytes={}, "
+                 "matches={}",
+                 HttpMethodName(plan.method), plan.scheme, plan.host, plan.port, plan.path,
+                 response.status_code, response.body.size(), *count);
+    } else {
+        LOG_INFO(Lib_Http,
+                 "Bloodborne summon HTTP: {} {}://{}:{}{} -> status={}, response_bytes={}",
+                 HttpMethodName(plan.method), plan.scheme, plan.host, plan.port, plan.path,
+                 response.status_code, response.body.size());
+    }
+}
+
 std::optional<std::string_view> FindResponseHeader(std::string_view headers,
                                                    std::string_view name) {
     size_t line_start = 0;
@@ -1150,6 +1182,7 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
 
     out_event_bits =
         ORBIS_HTTP_NB_EVENT_IN | ORBIS_HTTP_NB_EVENT_OUT | ORBIS_HTTP_NB_EVENT_RESOLVED;
+    LogBloodborneSummonResult(plan, out_res);
     return 0;
 #endif // ORBIS_HTTP_WITH_HTTPLIB
 }
