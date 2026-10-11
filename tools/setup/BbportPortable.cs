@@ -1516,6 +1516,20 @@ sealed class MainForm : Form {
                 shadNetProcess.WaitForExit(3000);
             }
         } catch (Exception e) { Log("停止 shadNet 时出现问题：" + e.Message); }
+        try {
+            string expected = Path.GetFullPath(Path.Combine(rootBox.Text.Trim().Trim('"'),
+                "shadp2p", "server", "shadnet.exe"));
+            foreach (Process process in Process.GetProcessesByName("shadnet")) {
+                try {
+                    string actual = process.MainModule == null ? "" : process.MainModule.FileName;
+                    if (!string.Equals(Path.GetFullPath(actual), expected, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    process.Kill();
+                    process.WaitForExit(3000);
+                } catch { }
+                finally { process.Dispose(); }
+            }
+        } catch (Exception e) { Log("清理 shadNet 子进程时出现问题：" + e.Message); }
         shadNetProcess = null;
         lanStartServerButton.Enabled = !busy;
         lanStopServerButton.Enabled = false;
@@ -1601,7 +1615,8 @@ sealed class MainForm : Form {
         }
     }
 
-    static bool RegisterShadNet(LaunchOptions options, out string message) {
+    static bool RegisterShadNet(LaunchOptions options, out string message, out byte resultCode) {
+        resultCode = 255;
         string host;
         int port;
         if (!TryParseLanEndpoint(options.LanAddress, out host, out port)) {
@@ -1645,8 +1660,9 @@ sealed class MainForm : Form {
                     int replySize = ReadInt32LE(replyHeader, 3);
                     if (replyHeader[0] != 1 || replySize < 16) throw new InvalidDataException("服务端注册响应格式错误。");
                     byte[] reply = ReadExactly(network, replySize - 15);
-                    message = ShadNetError(reply[0]);
-                    return reply[0] == 0;
+                    resultCode = reply[0];
+                    message = ShadNetError(resultCode);
+                    return resultCode == 0;
                 }
             }
         } catch (Exception e) { message = "注册失败：" + e.Message; return false; }
@@ -1664,7 +1680,8 @@ sealed class MainForm : Form {
         lanStatus.Text = "正在注册账号……";
         Thread worker = new Thread(new ThreadStart(delegate {
             string message;
-            bool ok = RegisterShadNet(options, out message);
+            byte resultCode;
+            bool ok = RegisterShadNet(options, out message, out resultCode);
             BeginInvoke((Action)delegate {
                 lanRegisterButton.Enabled = !busy;
                 lanStatus.Text = message;
@@ -2507,6 +2524,19 @@ sealed class MainForm : Form {
                     throw new IOException(statusMessage + localHint);
                 }
                 capture("Native bbport online: shadNet WebAPI reachable");
+                if (localEndpoint) {
+                    if (!Regex.IsMatch(options.LanNpid, @"^[A-Za-z0-9_-]{3,16}$") ||
+                        options.LanPassword.Length == 0 || options.LanEmail.IndexOf('@') <= 0)
+                        throw new InvalidDataException("本机 shadNet 首次使用需要填写有效的联机 ID、密码和注册邮箱。");
+                    string registrationMessage;
+                    byte registrationCode;
+                    bool registered = RegisterShadNet(options, out registrationMessage, out registrationCode);
+                    if (!registered && registrationCode != 11)
+                        throw new InvalidOperationException("本机 shadNet 账号准备失败：" + registrationMessage);
+                    capture(registrationCode == 0
+                        ? "Native bbport online: local shadNet account registered successfully"
+                        : "Native bbport online: local shadNet account already exists");
+                }
             }
             ProcessStartInfo info = new ProcessStartInfo(python,
                 "\"" + script + "\" --game-dir \"" + options.Game + "\"") {

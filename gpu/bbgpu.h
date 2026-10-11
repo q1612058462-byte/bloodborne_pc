@@ -18,6 +18,8 @@ typedef struct {
 void bbgpu_register_kernel(void);
 /* Co-op: the game folder and param.sfo identity for the network and PSN libraries. */
 void bbnet_configure(const char *app0, const char *serial, const char *title, const char *app_ver);
+/* Online startup gate: 1 when disabled or at least one shadNet user authenticated. */
+int bbnet_online_ready(void);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */

@@ -49,6 +49,7 @@
 #include "core/libraries/network/ssl2.h"
 #include "core/libraries/np/np_auth.h"
 #include "core/libraries/np/np_common.h"
+#include "core/libraries/np/np_handler.h"
 #include "core/libraries/np/np_manager.h"
 #include "core/libraries/np/np_matching2/np_matching2.h"
 #include "core/libraries/np/np_partner.h"
@@ -449,6 +450,11 @@ extern "C" void bbnet_configure(const char* app0, const char* serial, const char
     std::printf("Co-op: %s, NP communication id %s%s\n", serial ? serial : "?",
                 ids.empty() ? "missing" : ids.front().c_str(),
                 EmulatorSettings.IsShadNetEnabled() ? "; online play on" : "");
+}
+
+extern "C" int bbnet_online_ready(void) {
+    return !EmulatorSettings.IsShadNetEnabled() ||
+           Libraries::Np::NpHandler::GetInstance().IsAnySignedIn();
 }
 
 // ---- Registration ------------------------------------------------------------------------------
