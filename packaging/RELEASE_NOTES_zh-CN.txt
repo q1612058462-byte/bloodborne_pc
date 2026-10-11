@@ -1,5 +1,12 @@
 Bloodborne PC 中文懒人版更新说明
 
+v1.6.4（2026-10-11）
+- 原生 bbport 联机不再使用仅返回“已登录”的最小局域网桩；完整移植 shadp2p 的网络、NP Manager、NP Auth、WebAPI、Matching2、Signaling 与 P2P socket 协议栈。
+- “原生在线联机”会实际连接所填 shadNet 的 TCP 31313、UDP 31314 和 WebAPI TCP 31315，并使用已注册的 NPID 与密码完成认证。
+- 启动前先检测 shadNet WebAPI；本机开服时自动等待服务就绪，避免进入游戏后才笼统提示“无法连接服务器”。
+- 完整打包 Protobuf、OpenSSL、zlib 与所需 Abseil 运行库；仍保留独立 shadp2p 核心作为兼容测试方案。
+- 保留 v1.6.3 的 Windows 内存池按需提交修复、低显存配置、存档管理、金手指和输入映射。
+
 v1.6.3（2026-10-11）
 - 修复 Windows 在启动时用 SEC_COMMIT 一次性提交完整约 6 GiB 客体内存池，低内存／页面文件紧张的电脑因此报 Windows 错误 1450 或 1455 并以 139 退出的问题。
 - 内存池现在先保留地址空间，再只为游戏实际分配的物理范围按需提交；不会改变游戏可见的 5056 MiB 直接内存容量，也不降低画质。

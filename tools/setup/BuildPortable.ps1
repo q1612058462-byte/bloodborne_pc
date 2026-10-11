@@ -81,6 +81,27 @@ Get-ChildItem -LiteralPath (Join-Path $rootPath 'scripts') -Filter '*.py' -File 
 }
 Copy-RequiredTree (Join-Path $rootPath 'patches') (Join-Path $stage 'patches')
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'LICENSE-bbport.txt')
+
+# Licenses for the complete shadp2p/shadNet stack and its dynamically loaded
+# Windows dependencies.  The MSYS2 prefix is discovered rather than assumed so
+# setup.bat remains portable between C: and D: installations.
+$licenseStage = Join-Path $stage 'licenses'
+New-Item -ItemType Directory -Force -Path $licenseStage | Out-Null
+Copy-RequiredFile (Join-Path $rootPath 'gpu\third_party\wepoll\LICENSE') (Join-Path $licenseStage 'wepoll-LICENSE.txt')
+Copy-RequiredFile (Join-Path $rootPath 'gpu\third_party\httplib\LICENSE') (Join-Path $licenseStage 'cpp-httplib-LICENSE.txt')
+Copy-RequiredTree (Join-Path $rootPath 'packaging\windows\licenses') $licenseStage
+$msysPrefixes = @($env:MSYSTEM_PREFIX, 'C:\msys64\clang64', 'D:\msys64\clang64') |
+    Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } |
+    Select-Object -Unique
+foreach ($packageName in @('protobuf', 'abseil-cpp', 'openssl', 'miniupnpc', 'zlib')) {
+    foreach ($prefix in $msysPrefixes) {
+        $license = Join-Path $prefix ('share\licenses\' + $packageName + '\LICENSE')
+        if (Test-Path -LiteralPath $license -PathType Leaf) {
+            Copy-Item -LiteralPath $license -Destination (Join-Path $licenseStage ($packageName + '-LICENSE.txt')) -Force
+            break
+        }
+    }
+}
 Copy-RequiredFile (Join-Path $rootPath 'local_deps\shadp2p\client\shadPS4.exe') (Join-Path $stage 'shadp2p\client\shadPS4.exe')
 $shadnetSource = Join-Path $rootPath 'local_deps\shadp2p\server'
 $shadnetStage = Join-Path $stage 'shadp2p\server'
@@ -131,7 +152,7 @@ $buildInfo = @(
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
     'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
-    'Local preview: native bbport LAN room discovery, join/leave, Matching2 callbacks and peer signaling without launching shadPS4'
+    'Local feature: native bbport online play using the complete shadp2p network, NP, WebAPI, Matching2 and signaling stack'
     'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'
     'Local feature: pre-launch game integrity checks and optional Old Hunters entitlement folder'
     ('bb-probe SHA256: ' + $probeHash)

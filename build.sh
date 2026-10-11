@@ -128,7 +128,13 @@ echo "Built $PWD/out/bb-probe"
 fi
 if [[ ${1:-} == --test ]]; then
     network_libraries=()
-    if [[ -n $windows ]]; then network_libraries=(-lws2_32); fi
+    file_mod_compat=()
+    test_link=(-no-pie)
+    if [[ -n $windows ]]; then
+        network_libraries=(-lws2_32)
+        file_mod_compat=(src/win32_compat.c)
+        test_link=(-Wl,--disable-dynamicbase,--disable-high-entropy-va)
+    fi
     "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
         tests/test_network.c src/runtime_network.c "${network_libraries[@]}" -o out/network-test
     out/network-test
@@ -143,12 +149,13 @@ if [[ ${1:-} == --test ]]; then
     out/np-lan-client-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
     out/pad-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${test_link[@]}" -o out/runtime-test
     out/runtime-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -Isrc tests/test_file_mods.c -o out/file-mods-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -Isrc \
+        tests/test_file_mods.c "${file_mod_compat[@]}" "${network_libraries[@]}" -o out/file-mods-test
     out/file-mods-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/sema-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${test_link[@]}" -o out/sema-test
     out/sema-test
-    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
+    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c "${file_mod_compat[@]}" "${network_libraries[@]}" -o out/content-test
     out/content-test
 fi

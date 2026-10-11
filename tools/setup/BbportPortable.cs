@@ -450,7 +450,7 @@ sealed class MainForm : Form {
         new Choice("中（1080p／均衡）", "medium"), new Choice("高（1440p／质量优先）", "high") };
     static readonly Choice[] CoreModes = {
         new Choice("原生单机核心（bbport）", "native"),
-        new Choice("原生局域网（bbport，开发预览）", "native_lan"),
+        new Choice("原生在线联机（bbport + shadNet，测试版）", "native_lan"),
         new Choice("局域网联机核心（shadp2p，实验性）", "shadp2p") };
     static readonly string[][] CheatDefinitions = {
         new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
@@ -708,11 +708,11 @@ sealed class MainForm : Form {
         coreMode = Combo(core, "运行模式", CoreModes);
         coreMode.SelectedIndexChanged += delegate {
             string selected = Value(coreMode);
-            playButton.Text = selected == "native_lan" ? "启动原生局域网预览" :
+            playButton.Text = selected == "native_lan" ? "启动原生在线联机" :
                 selected == "shadp2p" ? "启动 shadp2p 联机" : "启动游戏";
             if (saveRootBox != null) RefreshSaveManager();
         };
-        AddSpan(core, Note("原生局域网直接使用 bbport，现已接通房间创建／发现／加入／离开、成员回调与对端信令地址；已通过同机双端协议测试，仍需两台电脑实机验证铃铛与 P2P 游戏数据。shadp2p 是可实际联机的独立上游模拟器核心。"));
+        AddSpan(core, Note("原生在线联机直接在 bbport 中使用 shadp2p 的完整网络、PSN、WebAPI、Matching2 与 Signaling 协议栈；独立 shadp2p 模式仍保留作为兼容测试方案。"));
         column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
@@ -776,7 +776,7 @@ sealed class MainForm : Form {
         lanColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         lanPage.Controls.Add(lanColumn);
 
-        TableLayoutPanel lanConnection = Group("shadp2p 局域网连接", 2);
+        TableLayoutPanel lanConnection = Group("shadNet 联机连接", 2);
         lanAddressBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(lanConnection, "服务器地址", lanAddressBox, null);
         lanNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
@@ -788,7 +788,7 @@ sealed class MainForm : Form {
         lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
         AddSpan(lanConnection, lanSeamless);
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
-        AddSpan(lanConnection, Note("原生局域网开发预览只读取“联机 ID”，不使用这里的 shadNet 地址、密码和注册邮箱；两台电脑需处于同一局域网，并允许 UDP 31314（发现）和 UDP 31316（P2P）通过 Windows 防火墙。"));
+        AddSpan(lanConnection, Note("原生在线模式会实际登录这里填写的 shadNet 账号，并连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；联机 ID 与密码必须是该服务器已经注册的账号。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
         TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
@@ -814,7 +814,7 @@ sealed class MainForm : Form {
         lanColumn.Controls.Add(lanServer.Parent);
 
         TableLayoutPanel lanCompatibility = Group("兼容性与存档", 2);
-        AddSpan(lanCompatibility, Note("当前打包核心由 shadp2p 官方 2026-08-16 配对发布构建，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
+        AddSpan(lanCompatibility, Note("原生 bbport 在线层移植自 shadp2p/shadNet 的完整协议实现，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
         AddSpan(lanCompatibility, Note("联机核心存档固定保存在“玩家数据目录\\shadp2p-home\\1000\\savedata”。选择联机模式后，存档管理页会自动管理和备份这一套存档，不会覆盖原生单机存档。"));
         lanColumn.Controls.Add(lanCompatibility.Parent);
 
@@ -1725,10 +1725,19 @@ sealed class MainForm : Form {
         options.Env["BB_MOUSE_X2"] = Value(mouseX2);
         options.Env["BB_MOUSE_WHEEL_UP"] = Value(mouseWheelUp);
         options.Env["BB_MOUSE_WHEEL_DOWN"] = Value(mouseWheelDown);
-        options.Env["BB_NETWORK_MODE"] = options.NativeLan ? "lan" : "";
-        options.Env["BB_LAN_NPID"] = options.NativeLan ? options.LanNpid : "";
-        options.Env["BB_P2P_PORT"] = options.NativeLan ? "31316" : "";
-        options.Env["BB_NETWORK_TRACE"] = options.NativeLan ? "1" : "";
+        string onlineHost = "";
+        int onlinePort = 31313;
+        bool validOnlineEndpoint = options.NativeLan &&
+            TryParseLanEndpoint(options.LanAddress, out onlineHost, out onlinePort);
+        options.Env["BB_NETWORK_MODE"] = "";
+        options.Env["BB_ONLINE"] = validOnlineEndpoint ? "1" : "";
+        options.Env["BB_SHADNET_SERVER"] = validOnlineEndpoint ? onlineHost + ":" + onlinePort : "";
+        options.Env["BB_SHADNET_WEBAPI"] = validOnlineEndpoint ? "http://" + onlineHost + ":31315" : "";
+        options.Env["BB_SHADNET_NPID"] = validOnlineEndpoint ? options.LanNpid : "";
+        options.Env["BB_SHADNET_PASSWORD"] = validOnlineEndpoint ? options.LanPassword : "";
+        options.Env["BB_UPNP"] = validOnlineEndpoint ? "0" : "";
+        options.Env["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] =
+            validOnlineEndpoint && options.LanSeamless ? "1" : "";
         List<string> enabledCheats = new List<string>();
         foreach (string[] definition in CheatDefinitions)
             if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);
@@ -1775,11 +1784,11 @@ sealed class MainForm : Form {
                 Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
             }
         }
-        if (lanMode) {
+        if (lanMode || nativeLan) {
             string host;
             int port;
             if (!TryParseLanEndpoint(lanAddressBox.Text, out host, out port)) {
-                Warn("局域网服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
+                Warn("shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
             }
             if (lanPasswordBox.Text.Length == 0) { Warn("请输入联机账号密码。"); return false; }
         }
@@ -2437,7 +2446,22 @@ sealed class MainForm : Form {
             capture("Runtime: " + options.Root);
             capture("Game: " + options.Game);
             capture("Player data: " + options.SaveRoot);
-            if (options.NativeLan) capture("Native LAN preview: enabled; NPID=" + options.LanNpid);
+            if (options.NativeLan) {
+                capture("Native bbport online: enabled; server=" + options.LanAddress +
+                    "; NPID=" + options.LanNpid + "; seamless=" + (options.LanSeamless ? "on" : "off"));
+                if (options.LanHost) {
+                    string serverError = StartLanServerProcess(options);
+                    if (serverError != null) throw new InvalidOperationException("本机 shadNet 启动失败：" + serverError);
+                }
+                string statusMessage = "";
+                bool online = false;
+                for (int attempt = 0; attempt < (options.LanHost ? 10 : 1); ++attempt) {
+                    if (CheckLanStatus(options.LanAddress, out statusMessage)) { online = true; break; }
+                    if (options.LanHost) Thread.Sleep(500);
+                }
+                if (!online) throw new IOException(statusMessage + " 请检查服务器、防火墙和联机地址。");
+                capture("Native bbport online: shadNet WebAPI reachable");
+            }
             ProcessStartInfo info = new ProcessStartInfo(python,
                 "\"" + script + "\" --game-dir \"" + options.Game + "\"") {
                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = options.Root,
