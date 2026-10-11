@@ -2485,7 +2485,9 @@ sealed class MainForm : Form {
             string lower = line.ToLowerInvariant();
             if (lower.Contains("crash report") || lower.Contains(" fault ") || lower.Contains("target region") ||
                 lower.Contains("exception") || lower.Contains("rip=") || lower.Contains("rax=") ||
-                lower.StartsWith("  #") || lower.Contains("gpu guest writes") || lower.Contains("stop:"))
+                lower.StartsWith("  #") || lower.Contains("gpu guest writes") || lower.Contains("stop:") ||
+                lower.Contains("memory pool") || lower.Contains("allocatedirectmemory") ||
+                lower.Contains("windows error 1450") || lower.Contains("windows error 1455"))
                 important.Add(line);
         }
         List<string> chosen = important.Count > 0 ? important : lines;
@@ -2511,7 +2513,13 @@ sealed class MainForm : Form {
             Log("游戏返回代码：" + exitCode);
             uint native = unchecked((uint)exitCode);
             if (exitCode == 139 || native == 0xC0000005u) {
-                string detail = "返回代码 139 表示程序发生了内存访问异常。下面是本次捕获到的崩溃位置和寄存器摘要：\r\n\r\n" +
+                bool commitFailure = diagnostic.IndexOf("memory pool", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (diagnostic.IndexOf("Windows error 1450", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     diagnostic.IndexOf("Windows error 1455", StringComparison.OrdinalIgnoreCase) >= 0);
+                string detail = commitFailure
+                    ? "Windows 无法提交游戏实际申请的内存。请关闭占用内存较大的程序，并把虚拟内存设为“系统管理的大小”或至少 16384 MB，重启 Windows 后再试。\r\n\r\n本次关键日志：\r\n\r\n"
+                    : "返回代码 139 表示程序发生了内存访问异常。下面是本次捕获到的崩溃位置和寄存器摘要：\r\n\r\n";
+                detail +=
                     (diagnostic.Length == 0 ? "没有捕获到崩溃栈，请查看完整日志。" : diagnostic) +
                     "\r\n\r\n完整日志：" + (logPath ?? "未生成");
                 MessageBox.Show(this, detail, "Bloodborne PC 崩溃详情（139）",
