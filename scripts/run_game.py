@@ -19,6 +19,7 @@ BB_DRY_RUN=1    every step but the last: prints the bb-probe command and its env
 The other variables are described where they are read below.
 """
 import glob
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from mods import remove_overlay
 
 WINDOWS = os.name == 'nt'
@@ -37,10 +40,55 @@ PYTHON = sys.executable if WINDOWS else os.environ.get('PYTHON') or sys.executab
 LAVAPIPE = ('/run/opengl-driver/share/vulkan/icd.d/lvp_icd*.json', '/usr/share/vulkan/icd.d/lvp_icd*.json')
 INITIAL_ENVIRONMENT = dict(os.environ)
 
+# Bloodborne first asks Sony's retired game-server endpoint for ss.info.  The community
+# service supplies that response (messages, bloodstains and the online-mode bootstrap), while
+# the shadp2p shadNet WebAPI supplies the summon_messenger endpoints used by the bells.
+COMMUNITY_SERVER = 'https://thehuntersdream.com'
+GAME_SERVER = 'https://ss4.scej-network.jp:20443'
+COMMUNITY_API_PORT = 18671
+
 
 def env(name, default=''):
     """A variable's value; `default` when it is unset or empty (as ${name:-default})."""
     return os.environ.get(name) or default
+
+
+def summon_service(webapi):
+    """Whether this shadNet WebAPI exposes shadp2p's Bloodborne summon broker."""
+    request = urllib.request.Request(webapi.rstrip('/') + '/summon_messenger/create', data=b'',
+                                     method='POST')
+    try:
+        urllib.request.urlopen(request, timeout=4).close()
+        return True
+    except urllib.error.HTTPError as error:
+        # A real route rejects an empty/unauthenticated request; a server without it says 404.
+        return error.code != 404
+    except (OSError, ValueError):
+        return False
+
+
+def online_overrides(environment, user_dir):
+    """Write and select the host routes required by Bloodborne's native online bootstrap."""
+    user_dir.mkdir(parents=True, exist_ok=True)
+    custom = user_dir / 'host_overrides.custom.json'
+    path = custom if custom.exists() else user_dir / 'host_overrides.json'
+    if path != custom:
+        community = (environment.get('BB_COMMUNITY_SERVER') or COMMUNITY_SERVER).rstrip('/')
+        if '://' not in community:
+            community = 'https://' + community
+        community_host = community.split('://', 1)[1].split('/', 1)[0]
+        webapi = (environment.get('BB_SHADNET_WEBAPI') or
+                  'http://127.0.0.1:31315').rstrip('/')
+        overrides = {GAME_SERVER: community}
+        if summon_service(webapi):
+            for scheme in ('https', 'http'):
+                overrides[f'{scheme}://{community_host}:{COMMUNITY_API_PORT}/summon_messenger'] = webapi
+            print(f'Co-op: summon signs through {webapi}')
+        else:
+            print(f'Co-op: {webapi} has no summon service; summon signs through {community}')
+        path.write_text(json.dumps(overrides, indent=2) + '\n', encoding='utf-8')
+    environment['SHADPS4_HTTP_HOST_OVERRIDES_JSON'] = str(path)
+    print(f'Co-op: Bloodborne server routes loaded from {path}')
 
 
 def exit_status(code):
@@ -368,10 +416,13 @@ def main():
             optimize_fsr4(prebuilt)
             if not prebuilt:
                 build()
+        user_dir = Path(env('BB_USER_DIR', os.path.join(data, 'user')))
+        if env('BB_ONLINE') == '1':
+            online_overrides(os.environ, user_dir)
         command = [probe, os.path.join(out, 'boot-linked.bin'),
                    '--content-profile', os.path.join(out, 'content.bin'),
                    '--patches', os.path.join(out, 'patches.bin'), '--app0', merged,
-                   '--user', env('BB_USER_DIR', os.path.join(data, 'user')),
+                   '--user', user_dir,
                    '--timeout', env('BB_TIMEOUT', '0'), *arguments]
         if WINDOWS:
             # Packaged builds load their private DLL closure. Development builds use MSYS2's
