@@ -716,13 +716,13 @@ void LogBloodborneSummonResult(const SendRequestPlan& plan, const HttpResponse& 
         return;
     }
     if (const auto count = BloodborneSummonResultCount(response)) {
-        LOG_INFO(Lib_Http,
+        LOG_WARNING(Lib_Http,
                  "Bloodborne summon HTTP: {} {}://{}:{}{} -> status={}, response_bytes={}, "
                  "matches={}",
                  HttpMethodName(plan.method), plan.scheme, plan.host, plan.port, plan.path,
                  response.status_code, response.body.size(), *count);
     } else {
-        LOG_INFO(Lib_Http,
+        LOG_WARNING(Lib_Http,
                  "Bloodborne summon HTTP: {} {}://{}:{}{} -> status={}, response_bytes={}",
                  HttpMethodName(plan.method), plan.scheme, plan.host, plan.port, plan.path,
                  response.status_code, response.body.size());
