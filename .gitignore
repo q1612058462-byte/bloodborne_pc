@@ -32,3 +32,7 @@ perf.data
 mods.json
 patches.json
 /Bloodborne.cmd
+
+# Local shadNet deployment settings and database
+/deploy/shadnet/.env
+/deploy/shadnet/data/

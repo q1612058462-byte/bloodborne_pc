@@ -1,5 +1,8 @@
 # Native LAN networking
 
+For the containerized Ubuntu shadNet server prototype and its Windows/Linux
+network choices, see [deploy/shadnet/README.md](../deploy/shadnet/README.md).
+
 bbport keeps its original disconnected network service behavior by default.
 Set `BB_NETWORK_MODE=lan` to opt in to the native transport while it is under
 development.
