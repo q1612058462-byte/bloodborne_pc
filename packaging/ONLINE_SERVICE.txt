@@ -1,0 +1,5 @@
+# Local Docker test mapping only. 127.0.0.1 means the player's own computer;
+# this package cannot connect to this server from another computer.
+# Never put a registration secret in this file or in the launcher.
+server=127.0.0.1:31313
+portal=http://127.0.0.1:18080

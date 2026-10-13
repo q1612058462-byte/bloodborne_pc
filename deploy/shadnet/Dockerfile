@@ -15,6 +15,8 @@ RUN git clone --recursive https://github.com/Wozzardman/shadnet-p2p.git /src \
     && test "$(git rev-parse HEAD)" = "$SHADNET_COMMIT"
 COPY patches/qt64-server-api.patch /tmp/qt64-server-api.patch
 RUN cd /src && git apply --unidiff-zero /tmp/qt64-server-api.patch
+COPY patches/online-stats.patch /tmp/online-stats.patch
+RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
 RUN --mount=type=cache,target=/src/build cmake -S /src -B /src/build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && cmake --build /src/build --parallel 4 -- -k 0 \

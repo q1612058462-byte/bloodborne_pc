@@ -35,7 +35,10 @@ Matching2Enabled=true
 MatchingUdpPort=31314
 WebApiPort=31315
 BloodborneSeamlessCoop=$seamless
-StatsEnabled=false
+StatsEnabled=true
+StatsPort=31320
+StatsPath=stats
+StatsCacheLife=10
 RegistrationSecretKey=$secret
 EOF
 mv "$config_file.tmp" "$config_file"

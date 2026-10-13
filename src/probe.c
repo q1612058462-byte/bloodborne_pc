@@ -718,8 +718,12 @@ int main(int argc, char **argv) {
     bbgpu_register_kernel();
     {
         const char *online=getenv("BB_ONLINE");
-        if (online && online[0]=='1' && !bbnet_online_ready())
-            fail("shadNet authentication failed; online mode was not started (check NPID, password, registration, or duplicate login)");
+        if (online && online[0]=='1') {
+            if (!bbnet_online_ready())
+                fail("shadNet authentication failed; online mode was not started (check NPID, password, registration, or duplicate login)");
+            printf("shadNet authentication confirmed\n");
+            fflush(stdout);
+        }
     }
 #ifdef _WIN32
     SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize;

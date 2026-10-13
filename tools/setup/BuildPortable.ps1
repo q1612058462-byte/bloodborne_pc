@@ -120,6 +120,7 @@ Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\ser
 Copy-RequiredFile (Join-Path $packaging 'SHADP2P_THIRD_PARTY.txt') (Join-Path $stage 'shadp2p\THIRD_PARTY.txt')
 Copy-RequiredFile (Join-Path $packaging 'APP_VERSION.txt') (Join-Path $stage 'APP_VERSION.txt')
 Copy-RequiredFile (Join-Path $packaging 'RELEASE_NOTES_zh-CN.txt') (Join-Path $stage 'RELEASE_NOTES_zh-CN.txt')
+Copy-RequiredFile (Join-Path $packaging 'ONLINE_SERVICE.txt') (Join-Path $stage 'ONLINE_SERVICE.txt')
 
 $appVersion = [IO.File]::ReadAllText((Join-Path $packaging 'APP_VERSION.txt')).Trim()
 if ($appVersion -notmatch '^\d+\.\d+\.\d+$') {

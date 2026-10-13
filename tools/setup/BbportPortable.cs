@@ -18,6 +18,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -53,6 +54,7 @@ sealed class LaunchOptions {
     public string SaveRoot;
     public bool LanMode;
     public bool NativeLan;
+    public bool PublicOnline;
     public bool LanHost;
     public bool LanSeamless;
     public string LanAddress;
@@ -66,6 +68,12 @@ sealed class LaunchOptions {
     public bool StartMenuLink;
     public readonly Dictionary<string, string> Ini = new Dictionary<string, string>();
     public readonly Dictionary<string, string> Env = new Dictionary<string, string>();
+}
+
+sealed class OnlinePlayer {
+    public string Npid;
+    public string Nickname;
+    public string Title;
 }
 
 sealed class SaveValidation {
@@ -450,7 +458,8 @@ sealed class MainForm : Form {
         new Choice("中（1080p／均衡）", "medium"), new Choice("高（1440p／质量优先）", "high") };
     static readonly Choice[] CoreModes = {
         new Choice("原生单机核心（bbport）", "native"),
-        new Choice("原生在线联机（bbport + shadNet，测试版）", "native_lan"),
+        new Choice("局域网原生联机（bbport + shadNet）", "native_lan"),
+        new Choice("在线联机（内置服务，测试版）", "public_online"),
         new Choice("局域网联机核心（shadp2p，实验性）", "shadp2p") };
     static readonly string[][] CheatDefinitions = {
         new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
@@ -546,6 +555,14 @@ sealed class MainForm : Form {
     TextBox saveRootBox;
     CheckBox autoBackup;
     TextBox lanAddressBox, lanNpidBox, lanPasswordBox, lanEmailBox, lanSecretBox;
+    TextBox onlineNpidBox, onlinePasswordBox, onlineQqBox, onlineNicknameBox;
+    CheckBox onlineShowInList;
+    Label onlineServiceStatus, onlineCountStatus, onlineLoginStatus, onlineApplicationStatus,
+        onlineTailscaleStatus;
+    ListView onlineUsersList;
+    Button onlineRefreshButton, onlineApplyButton, onlineQueryButton, onlineRegisterButton,
+        onlineTailscaleButton;
+    string onlineApplicationId = "", onlineApplicationToken = "", onlineRegistrationKey = "";
     CheckBox lanHost, lanSeamless;
     Label lanStatus;
     Button lanStartServerButton, lanStopServerButton, lanTestButton, lanRegisterButton;
@@ -566,6 +583,9 @@ sealed class MainForm : Form {
     string expectedProbeHash;
     readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
     readonly System.Windows.Forms.Timer pump = new System.Windows.Forms.Timer();
+    readonly string welcomeFile;
+    bool currentRunPublic;
+    volatile bool publicLoginSucceeded;
 
     static Choice[] BuildKeyChoices() {
         List<Choice> keys = new List<Choice>();
@@ -638,6 +658,7 @@ sealed class MainForm : Form {
         using (Graphics g = CreateGraphics()) scale = g.DpiX / 96f;
         string stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BloodbornePC");
         stateFile = Path.Combine(stateDir, "launcher.ini");
+        welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
         Font = SystemFonts.MessageBoxFont;
         StartPosition = FormStartPosition.CenterScreen;
@@ -650,6 +671,7 @@ sealed class MainForm : Form {
         pump.Tick += delegate { DrainLog(); };
         pump.Start();
         FormClosing += OnClosing;
+        Shown += delegate { ShowWelcomeOnce(); };
     }
 
     static Image LauncherBackground() {
@@ -671,18 +693,25 @@ sealed class MainForm : Form {
         tabs = new TabControl { Dock = DockStyle.Fill };
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage onlinePage = new TabPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
+        TabPage helpPage = new TabPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
         logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
         tabs.TabPages.Add(settingsPage);
         tabs.TabPages.Add(lanPage);
+        tabs.TabPages.Add(onlinePage);
         tabs.TabPages.Add(inputPage);
         tabs.TabPages.Add(savePage);
         tabs.TabPages.Add(cheatPage);
         tabs.TabPages.Add(versionPage);
+        tabs.TabPages.Add(helpPage);
         tabs.TabPages.Add(logPage);
+        tabs.SelectedIndexChanged += delegate {
+            if (tabs.SelectedTab == onlinePage) RefreshPublicStatus();
+        };
         if (background != null) {
             foreach (TabPage page in tabs.TabPages) {
                 page.BackgroundImage = background;
@@ -709,11 +738,14 @@ sealed class MainForm : Form {
         coreMode = Combo(core, "运行模式", CoreModes);
         coreMode.SelectedIndexChanged += delegate {
             string selected = Value(coreMode);
-            playButton.Text = selected == "native_lan" ? "启动原生在线联机" :
+            playButton.Text = selected == "public_online" ? "启动在线联机" :
+                selected == "native_lan" ? "启动局域网联机" :
                 selected == "shadp2p" ? "启动 shadp2p 联机" : "启动游戏";
             if (saveRootBox != null) RefreshSaveManager();
         };
-        AddSpan(core, Note("原生在线联机直接在 bbport 中使用 shadp2p 的完整网络、PSN、WebAPI、Matching2 与 Signaling 协议栈；独立 shadp2p 模式仍保留作为兼容测试方案。"));
+        AddSpan(core, Note("“局域网原生联机”连接自己填写的 shadNet；“在线联机”使用安装包内预配置的服务。" +
+            (PublicServiceIsLoopback() ? "当前为本机 Docker 测试，仅供同机使用。" : "") +
+            "两者都基于 bbport 的网络协议栈；独立 shadp2p 核心仍可用于兼容测试。"));
         column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
@@ -789,7 +821,7 @@ sealed class MainForm : Form {
         lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
         AddSpan(lanConnection, lanSeamless);
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
-        AddSpan(lanConnection, Note("原生在线模式会实际登录这里填写的 shadNet 账号，并连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；联机 ID 与密码必须是该服务器已经注册的账号。"));
+        AddSpan(lanConnection, Note("局域网原生模式会实际登录这里填写的 shadNet 账号，并连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；联机 ID 与密码必须是该服务器已经注册的账号。"));
         AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。诊断时可让服务端和所有客户端同时开启实验性无缝联机，以排除区域、等级和距离过滤。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
@@ -819,6 +851,90 @@ sealed class MainForm : Form {
         AddSpan(lanCompatibility, Note("原生 bbport 在线层移植自 shadp2p/shadNet 的完整协议实现，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
         AddSpan(lanCompatibility, Note("联机核心存档固定保存在“玩家数据目录\\shadp2p-home\\1000\\savedata”。选择联机模式后，存档管理页会自动管理和备份这一套存档，不会覆盖原生单机存档。"));
         lanColumn.Controls.Add(lanCompatibility.Parent);
+
+        TableLayoutPanel onlineColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        onlineColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        onlinePage.Controls.Add(onlineColumn);
+        TableLayoutPanel onlineOverview = Group(PublicServiceIsLoopback() ? "本机 Docker 测试服务" : "公共在线服务", 2);
+        if (PublicServiceIsLoopback()) {
+            Label localOnly = Note("当前是本机 Docker 测试包：127.0.0.1 指这台电脑。另一台电脑运行同一个包，只会连接它自己，不能用于异地联机。");
+            localOnly.ForeColor = Color.Firebrick;
+            AddSpan(onlineOverview, localOnly);
+        }
+        onlineServiceStatus = Note("服务状态：尚未检测");
+        onlineCountStatus = Note("在线人数：暂不可用");
+        onlineLoginStatus = Note("登录状态：未登录");
+        AddSpan(onlineOverview, onlineServiceStatus);
+        AddSpan(onlineOverview, onlineCountStatus);
+        AddSpan(onlineOverview, onlineLoginStatus);
+        onlineRefreshButton = new Button { Text = "刷新服务状态", AutoSize = true };
+        onlineRefreshButton.Click += delegate { RefreshPublicStatus(); };
+        AddSpan(onlineOverview, Flow(onlineRefreshButton));
+        onlineUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(190),
+            Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
+        onlineUsersList.Columns.Add("联机 ID", S(150));
+        onlineUsersList.Columns.Add("公开昵称", S(170));
+        onlineUsersList.Columns.Add("当前游戏", S(300));
+        AddSpan(onlineOverview, onlineUsersList);
+        AddSpan(onlineOverview, Note("在线人数以服务端实际返回为准；服务端尚未提供人数接口时显示“暂不可用”，不会把连通性当作已登录。"));
+        AddSpan(onlineOverview, Note("公开列表只展示同意公开的在线玩家；QQ 号不会出现在列表中。服务器统计包含未公开名单的在线人数。"));
+        onlineColumn.Controls.Add(onlineOverview.Parent);
+        TableLayoutPanel onlineAccount = Group("我的在线账号", 2);
+        onlineNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
+        onlinePasswordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+        onlineQqBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 12 };
+        onlineNicknameBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 24 };
+        AddRow(onlineAccount, "联机 ID（NPID）", onlineNpidBox, null);
+        AddRow(onlineAccount, "账号密码", onlinePasswordBox, null);
+        AddRow(onlineAccount, "QQ 号（申请时填写）", onlineQqBox, null);
+        AddRow(onlineAccount, "昵称（申请时填写）", onlineNicknameBox, null);
+        onlineShowInList = Check("同意在在线玩家列表中展示我的联机 ID、昵称和当前游戏");
+        AddSpan(onlineAccount, onlineShowInList);
+        FlowLayoutPanel onlineAccountButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill,
+            WrapContents = true };
+        onlineApplyButton = new Button { Text = "申请一次性注册码", AutoSize = true };
+        onlineQueryButton = new Button { Text = "查询申请进度", AutoSize = true };
+        onlineRegisterButton = new Button { Text = "完成账号注册", AutoSize = true };
+        onlineApplyButton.Click += delegate { ApplyOnlineAccount(); };
+        onlineQueryButton.Click += delegate { QueryOnlineApplication(); };
+        onlineRegisterButton.Click += delegate { RegisterOnlineAccount(); };
+        onlineAccountButtons.Controls.AddRange(new Control[] { onlineApplyButton, onlineQueryButton,
+            onlineRegisterButton });
+        AddSpan(onlineAccount, onlineAccountButtons);
+        onlineApplicationStatus = Note("申请状态：尚未申请");
+        AddSpan(onlineAccount, onlineApplicationStatus);
+        Button useOnline = new Button { Text = "使用在线联机模式", AutoSize = true };
+        useOnline.Click += delegate { SelectValue(coreMode, "public_online"); tabs.SelectedTab = onlinePage; };
+        AddSpan(onlineAccount, Flow(useOnline));
+        AddSpan(onlineAccount, Note("注册方法：填写 QQ 号、昵称和联机 ID，申请个人一次性注册码。正式服务默认由管理员审核；获批后点“查询申请进度”，再输入密码完成注册。服务器只保存 QQ 的不可逆摘要及末四位，用于去重和频率统计，不公开 QQ 号。"));
+        AddSpan(onlineAccount, Link("打开作者主页，查看互助与账号申请方式", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
+        AddSpan(onlineAccount, Note("交流 QQ 群：945992968（一群，已满）；892729104（二群，可加千人群讨论）。入群问题答案：细雨寒言。"));
+        AddSpan(onlineAccount, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
+            (PublicServiceIsLoopback() ? "本机 Docker 测试包不能供异地玩家直接联机。" : "")));
+        onlineColumn.Controls.Add(onlineAccount.Parent);
+        TableLayoutPanel onlineGuide = Group("联机步骤", 2);
+        AddSpan(onlineGuide, Note("1. 与朋友安装同一版本并分别领取账号。\r\n2. 确认两台电脑具备互相可达的安全网络连接。\r\n3. 游戏内使用相同联机密码，在可联机区域由房主摇召唤钟，另一人摇小共鸣钟。\r\n4. 灰色铃铛通常意味着当前区域或游戏状态不允许召唤。"));
+        AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一 Tailscale 网络；只连得上服务器而玩家之间不通，仍可能无法召唤。"));
+        onlineTailscaleStatus = Note("Tailscale：尚未检测（需用户自行安装并加入受控网络）");
+        AddSpan(onlineGuide, onlineTailscaleStatus);
+        onlineTailscaleButton = new Button { Text = "检测 Tailscale 连接", AutoSize = true };
+        onlineTailscaleButton.Click += delegate { RefreshTailscaleStatus(); };
+        AddSpan(onlineGuide, Flow(onlineTailscaleButton));
+        AddSpan(onlineGuide, Link("下载 Tailscale（官方）", "https://tailscale.com/download"));
+        onlineColumn.Controls.Add(onlineGuide.Parent);
+
+        TableLayoutPanel helpColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        helpColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        helpPage.Controls.Add(helpColumn);
+        TableLayoutPanel helpAbout = Group("关于本项目", 2);
+        AddSpan(helpAbout, Note("这是非盈利性质的爱好者项目，不销售游戏、账号或联机资格，也不提供游戏本体。请使用自己合法取得的游戏文件；联机和存档修改仍处于实验阶段，请先备份存档。"));
+        AddSpan(helpAbout, Note("启动器整合与维护：哔哩哔哩 细雨寒言。底层 bbport、shadp2p/shadNet 由各自上游作者开发；许可与第三方说明请见安装包内的 LICENSE 文件。"));
+        AddSpan(helpAbout, Link("作者主页：哔哩哔哩 细雨寒言", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
+        AddSpan(helpAbout, Link("互帮互助群入口（作者主页）", "https://space.bilibili.com/18955882?spm_id_from=333.1387.0.0"));
+        AddSpan(helpAbout, Note("QQ 交流：945992968（一群已满）；892729104（二群，千人群）。入群问题答案是作者昵称：细雨寒言。"));
+        helpColumn.Controls.Add(helpAbout.Parent);
 
         TableLayoutPanel inputColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -1133,6 +1249,15 @@ sealed class MainForm : Form {
     static CheckBox Check(string text) { return new CheckBox { Text = text, AutoSize = true }; }
     Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = SystemColors.GrayText,
         MaximumSize = new Size(S(710), 0), Margin = new Padding(0, S(2), 0, S(6)) }; }
+    LinkLabel Link(string title, string url) {
+        LinkLabel link = new LinkLabel { Text = title, AutoSize = true,
+            MaximumSize = new Size(S(710), 0), Margin = new Padding(0, S(2), 0, S(6)) };
+        link.LinkClicked += delegate {
+            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+            catch (Exception e) { Warn("无法打开链接：" + e.Message); }
+        };
+        return link;
+    }
     static FlowLayoutPanel Flow(params Control[] controls) {
         FlowLayoutPanel flow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill, WrapContents = false };
@@ -1188,6 +1313,17 @@ sealed class MainForm : Form {
         lanSecretBox.Text = savedLanSecret;
         lanHost.Checked = Get(state, "lan_host", "0") == "1";
         lanSeamless.Checked = Get(state, "lan_seamless", "0") == "1";
+        onlineNpidBox.Text = Get(state, "online_npid", "");
+        onlinePasswordBox.Text = UnprotectSecret(Get(state, "online_password_dpapi", ""));
+        onlineNicknameBox.Text = Get(state, "online_nickname", "");
+        onlineShowInList.Checked = Get(state, "online_show_in_list", "0") == "1";
+        onlineApplicationId = Get(state, "online_application_id", "");
+        onlineApplicationToken = UnprotectSecret(Get(state, "online_application_token_dpapi", ""));
+        if (onlineApplicationId.Length > 0 && onlineApplicationToken.Length > 0)
+            onlineApplicationStatus.Text = "申请状态：已有待查询申请，请点击“查询申请进度”。";
+        onlineServiceStatus.Text = PublicServerAddress().Length == 0
+            ? "服务状态：尚未开放（此安装包未配置公共服务）" : "服务状态：尚未检测";
+        onlineLoginStatus.Text = "登录状态：未登录";
         SelectValue(qualityProfile, Get(state, "quality_profile", "medium"));
         Dictionary<string, string> ini = ReadValues(Path.Combine(rootBox.Text, "bbport.ini"));
         SelectValue(resolution, Get(ini, "output_res", DefaultResolution()));
@@ -1230,6 +1366,49 @@ sealed class MainForm : Form {
         preset.Enabled = UpscalerUsesPreset(Value(upscaler));
         CheckGame();
         RefreshSaveManager();
+    }
+
+    void ShowWelcomeOnce() {
+        if (File.Exists(welcomeFile)) return;
+        MessageBox.Show(this,
+            "欢迎使用 Bloodborne PC 中文安装与启动器。\r\n\r\n" +
+            "这是非盈利性质的爱好者项目，不销售游戏、账号或联机资格，也不提供游戏本体。" +
+            "请使用自己合法取得的游戏文件，并注意备份存档。\r\n\r\n" +
+            "启动器整合与维护：哔哩哔哩 细雨寒言\r\n" +
+            "更多说明请查看“帮助”页。",
+            "首次使用说明 · 哔哩哔哩 细雨寒言", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        try {
+            Directory.CreateDirectory(Path.GetDirectoryName(welcomeFile));
+            File.WriteAllText(welcomeFile, "shown", Encoding.UTF8);
+        } catch { }
+    }
+
+    static string OnlinePackageSetting(string key) {
+        foreach (string line in PayloadText("ONLINE_SERVICE.txt").Split(new char[] { '\r', '\n' },
+            StringSplitOptions.RemoveEmptyEntries)) {
+            string trimmed = line.Trim();
+            string prefix = key + "=";
+            if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return trimmed.Substring(prefix.Length).Trim();
+        }
+        return "";
+    }
+
+    static string PublicServerAddress() { return OnlinePackageSetting("server"); }
+    static bool PublicServiceIsLoopback() {
+        string host;
+        int port;
+        IPAddress address;
+        return TryParseLanEndpoint(PublicServerAddress(), out host, out port) &&
+            (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+             (IPAddress.TryParse(host, out address) && IPAddress.IsLoopback(address)));
+    }
+    static string PublicPortalUrl() {
+        string value = OnlinePackageSetting("portal").TrimEnd('/');
+        Uri uri;
+        return Uri.TryCreate(value, UriKind.Absolute, out uri) &&
+            (uri.Scheme == "http" || uri.Scheme == "https") && uri.UserInfo.Length == 0 &&
+            uri.PathAndQuery == "/" ? value : "";
     }
 
     static string Get(Dictionary<string, string> map, string key, string fallback) {
@@ -1580,6 +1759,298 @@ sealed class MainForm : Form {
         } catch (Exception e) { message = "无法连接服务器：" + e.Message; return false; }
     }
 
+    static bool CheckPublicStatus(out string message, out int onlinePlayers,
+                                  out List<OnlinePlayer> players) {
+        onlinePlayers = -1;
+        players = new List<OnlinePlayer>();
+        string portal = PublicPortalUrl();
+        if (portal.Length == 0) {
+            message = "公共服务尚未配置，暂不能使用在线联机。"; return false;
+        }
+        try {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(portal + "/v1/status");
+            request.Timeout = 4000;
+            request.ReadWriteTimeout = 4000;
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
+                if (response.StatusCode != HttpStatusCode.OK ||
+                    !ParsePublicStatusDetails(reader.ReadToEnd(), out onlinePlayers, out players)) {
+                    message = "服务端响应异常。"; return false;
+                }
+                message = "服务在线";
+                return true;
+            }
+        } catch { message = "服务暂时不可用，请稍后重试。"; return false; }
+    }
+
+    static bool ParsePublicStatus(string body, out int onlinePlayers) {
+        List<OnlinePlayer> ignored;
+        return ParsePublicStatusDetails(body, out onlinePlayers, out ignored);
+    }
+
+    static string PublicField(Dictionary<string, object> map, string key) {
+        object value;
+        if (!map.TryGetValue(key, out value) || value == null) return "";
+        string result = Convert.ToString(value, CultureInfo.InvariantCulture);
+        return result.Length > 100 ? result.Substring(0, 100) : result;
+    }
+
+    static bool ParsePublicStatusDetails(string body, out int onlinePlayers,
+                                         out List<OnlinePlayer> players) {
+        onlinePlayers = -1;
+        players = new List<OnlinePlayer>();
+        Dictionary<string, object> status = JsonSerializer().DeserializeObject(body)
+            as Dictionary<string, object>;
+        object okValue;
+        if (status == null || !status.TryGetValue("ok", out okValue) ||
+            !(okValue is bool) || !(bool)okValue) return false;
+        object count;
+        if (status.TryGetValue("online_players", out count) && count != null) {
+            int parsed;
+            if (int.TryParse(Convert.ToString(count, CultureInfo.InvariantCulture), out parsed) && parsed >= 0)
+                onlinePlayers = parsed;
+        }
+        object listValue;
+        object[] list = status.TryGetValue("users", out listValue) ? listValue as object[] : null;
+        if (list != null) foreach (object item in list) {
+            Dictionary<string, object> user = item as Dictionary<string, object>;
+            if (user == null || players.Count >= 500) continue;
+            string npid = PublicField(user, "npid");
+            if (npid.Length == 0) continue;
+            players.Add(new OnlinePlayer { Npid = npid, Nickname = PublicField(user, "nickname"),
+                Title = PublicField(user, "title_name") });
+        }
+        return true;
+    }
+
+    void RefreshPublicStatus() {
+        if (onlineRefreshButton == null || !onlineRefreshButton.Enabled) return;
+        onlineRefreshButton.Enabled = false;
+        onlineServiceStatus.Text = "服务状态：正在检测……";
+        Thread worker = new Thread(new ThreadStart(delegate {
+            string message;
+            int count;
+            List<OnlinePlayer> players;
+            bool ok = CheckPublicStatus(out message, out count, out players);
+            if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                onlineRefreshButton.Enabled = true;
+                onlineServiceStatus.Text = "服务状态：" + message;
+                onlineServiceStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                onlineCountStatus.Text = "在线人数：" + (count < 0 ? "暂不可用" : count.ToString()) +
+                    "　公开列表：" + players.Count;
+                onlineUsersList.BeginUpdate();
+                onlineUsersList.Items.Clear();
+                foreach (OnlinePlayer player in players) {
+                    ListViewItem row = new ListViewItem(player.Npid);
+                    row.SubItems.Add(player.Nickname);
+                    row.SubItems.Add(player.Title);
+                    onlineUsersList.Items.Add(row);
+                }
+                onlineUsersList.EndUpdate();
+            });
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void RefreshTailscaleStatus() {
+        onlineTailscaleButton.Enabled = false;
+        onlineTailscaleStatus.Text = "Tailscale：正在检测……";
+        Thread worker = new Thread(new ThreadStart(delegate {
+            string message;
+            bool connected = false;
+            try {
+                string installed = Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe");
+                if (!File.Exists(installed)) installed = "tailscale.exe";
+                ProcessStartInfo info = new ProcessStartInfo(installed, "status --json") {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true
+                };
+                using (Process process = Process.Start(info)) {
+                    Task<string> output = Task.Factory.StartNew<string>(delegate {
+                        return process.StandardOutput.ReadToEnd();
+                    });
+                    if (!process.WaitForExit(4000)) {
+                        try { process.Kill(); } catch { }
+                        throw new IOException("检测超时，请确认 Tailscale 已启动。");
+                    }
+                    if (process.ExitCode != 0) throw new IOException("客户端未连接或尚未登录。");
+                    Dictionary<string, object> status = JsonSerializer().DeserializeObject(
+                        output.Result) as Dictionary<string, object>;
+                    connected = status != null && PublicField(status, "BackendState") == "Running";
+                    message = connected ? "Tailscale：已连接尾网，请确认朋友也在同一受控网络。" :
+                        "Tailscale：未连接，请在客户端完成登录。";
+                }
+            } catch (Exception e) {
+                message = "Tailscale：无法确认连接（" + e.Message + "）";
+            }
+            if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                onlineTailscaleButton.Enabled = true;
+                onlineTailscaleStatus.Text = message;
+                onlineTailscaleStatus.ForeColor = connected ? Color.DarkGreen : Color.Firebrick;
+            });
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    static Dictionary<string, object> OnlinePortalRequest(string route, Dictionary<string, object> body) {
+        string portal = PublicPortalUrl();
+        if (portal.Length == 0) throw new InvalidOperationException("公共在线服务尚未配置。");
+        byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer().Serialize(body));
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(portal + route);
+        request.Method = "POST";
+        request.ContentType = "application/json; charset=utf-8";
+        request.ContentLength = payload.Length;
+        request.Timeout = 5000;
+        request.ReadWriteTimeout = 5000;
+        try {
+            using (Stream stream = request.GetRequestStream()) stream.Write(payload, 0, payload.Length);
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
+                Dictionary<string, object> result = JsonSerializer().DeserializeObject(reader.ReadToEnd())
+                    as Dictionary<string, object>;
+                if (result == null) throw new InvalidDataException("服务端响应格式错误。");
+                return result;
+            }
+        } catch (WebException error) {
+            HttpWebResponse response = error.Response as HttpWebResponse;
+            if (response != null) using (response) using (StreamReader reader = new StreamReader(
+                response.GetResponseStream(), Encoding.UTF8)) {
+                try {
+                    Dictionary<string, object> result = JsonSerializer().DeserializeObject(reader.ReadToEnd())
+                        as Dictionary<string, object>;
+                    if (result != null && PublicField(result, "error").Length > 0)
+                        throw new InvalidOperationException(PublicField(result, "error"));
+                } catch (ArgumentException) { }
+            }
+            throw new IOException("在线服务请求失败，请稍后重试。");
+        }
+    }
+
+    void PersistOnlineApplication() {
+        Dictionary<string, string> state = ReadValues(stateFile);
+        state["online_application_id"] = onlineApplicationId;
+        state["online_application_token_dpapi"] = ProtectSecret(onlineApplicationToken);
+        state["online_npid"] = onlineNpidBox.Text.Trim();
+        state["online_nickname"] = onlineNicknameBox.Text.Trim();
+        state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
+        state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
+        Directory.CreateDirectory(Path.GetDirectoryName(stateFile));
+        WriteSimple(stateFile, state);
+    }
+
+    void ApplyOnlineAccount() {
+        string qq = onlineQqBox.Text.Trim();
+        string nickname = onlineNicknameBox.Text.Trim();
+        string npid = onlineNpidBox.Text.Trim();
+        if (!Regex.IsMatch(qq, @"^[1-9][0-9]{4,11}$") || nickname.Length < 1 || nickname.Length > 24 ||
+            !Regex.IsMatch(npid, @"^[A-Za-z0-9_-]{3,16}$")) {
+            Warn("请填写有效的 QQ 号、1–24 字昵称和 3–16 位联机 ID。"); return;
+        }
+        onlineApplyButton.Enabled = false;
+        onlineApplicationStatus.Text = "申请状态：正在提交……";
+        bool show = onlineShowInList.Checked;
+        Thread worker = new Thread(new ThreadStart(delegate {
+            try {
+                Dictionary<string, object> body = new Dictionary<string, object>();
+                body["qq"] = qq; body["nickname"] = nickname; body["npid"] = npid;
+                body["show_in_list"] = show;
+                Dictionary<string, object> result = OnlinePortalRequest("/v1/apply", body);
+                string id = PublicField(result, "application_id");
+                string token = PublicField(result, "application_token");
+                if (id.Length == 0 || token.Length == 0) throw new InvalidDataException("申请响应不完整。");
+                BeginInvoke((Action)delegate {
+                    onlineApplicationId = id;
+                    onlineApplicationToken = token;
+                    onlineRegistrationKey = PublicField(result, "registration_key");
+                    onlineApplicationStatus.Text = onlineRegistrationKey.Length > 0
+                        ? "申请状态：已获一次性注册码，请输入账号密码并完成注册。"
+                        : "申请状态：等待管理员审核，稍后点击“查询申请进度”。";
+                    onlineApplyButton.Enabled = true;
+                    try { PersistOnlineApplication(); }
+                    catch (Exception e) { Warn("无法保存申请凭据：" + e.Message); }
+                });
+            } catch (Exception e) {
+                BeginInvoke((Action)delegate {
+                    onlineApplyButton.Enabled = true;
+                    onlineApplicationStatus.Text = "申请状态：失败——" + e.Message;
+                });
+            }
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void QueryOnlineApplication() {
+        if (onlineApplicationId.Length == 0 || onlineApplicationToken.Length == 0) {
+            Warn("请先申请一次性注册码。"); return;
+        }
+        string id = onlineApplicationId, token = onlineApplicationToken;
+        onlineQueryButton.Enabled = false;
+        Thread worker = new Thread(new ThreadStart(delegate {
+            try {
+                Dictionary<string, object> body = new Dictionary<string, object>();
+                body["application_id"] = id; body["application_token"] = token;
+                Dictionary<string, object> result = OnlinePortalRequest("/v1/application", body);
+                string state = PublicField(result, "state");
+                string key = PublicField(result, "registration_key");
+                BeginInvoke((Action)delegate {
+                    onlineRegistrationKey = key;
+                    onlineApplicationStatus.Text = state == "approved" ?
+                        "申请状态：已获一次性注册码，请输入账号密码并完成注册。" :
+                        state == "registered" ? "申请状态：账号已注册。" :
+                        state == "expired" ? "申请状态：已过期，请重新申请。" :
+                        "申请状态：等待管理员审核。";
+                    onlineQueryButton.Enabled = true;
+                });
+            } catch (Exception e) { BeginInvoke((Action)delegate {
+                onlineQueryButton.Enabled = true;
+                onlineApplicationStatus.Text = "查询失败：" + e.Message;
+            }); }
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void RegisterOnlineAccount() {
+        if (onlineApplicationId.Length == 0 || onlineApplicationToken.Length == 0 ||
+            onlineRegistrationKey.Length == 0) {
+            Warn("尚未获批一次性注册码。请先申请并查询申请进度。"); return;
+        }
+        string password = onlinePasswordBox.Text;
+        if (password.Length < 8 || password.Length > 128) {
+            Warn("在线账号密码须为 8–128 个字符。"); return;
+        }
+        string id = onlineApplicationId, token = onlineApplicationToken, key = onlineRegistrationKey;
+        onlineRegisterButton.Enabled = false;
+        onlineApplicationStatus.Text = "申请状态：正在注册……";
+        Thread worker = new Thread(new ThreadStart(delegate {
+            try {
+                Dictionary<string, object> body = new Dictionary<string, object>();
+                body["application_id"] = id; body["application_token"] = token;
+                body["registration_key"] = key; body["password"] = password;
+                Dictionary<string, object> result = OnlinePortalRequest("/v1/register", body);
+                object ok;
+                if (!result.TryGetValue("ok", out ok) || !(ok is bool) || !(bool)ok)
+                    throw new InvalidOperationException("服务端未完成注册，请检查联机 ID 是否已被占用。");
+                BeginInvoke((Action)delegate {
+                    onlineApplicationId = ""; onlineApplicationToken = ""; onlineRegistrationKey = "";
+                    onlineApplicationStatus.Text = "申请状态：注册成功！保存设置后即可启动在线联机。";
+                    onlineRegisterButton.Enabled = true;
+                    try { PersistOnlineApplication(); }
+                    catch (Exception e) { Warn("注册成功，但本地设置保存失败：" + e.Message); }
+                });
+            } catch (Exception e) { BeginInvoke((Action)delegate {
+                onlineRegisterButton.Enabled = true;
+                onlineApplicationStatus.Text = "注册失败：" + e.Message;
+            }); }
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
     void TestLanServerFromUi() {
         lanTestButton.Enabled = false;
         lanStatus.Text = "正在检测服务器……";
@@ -1748,14 +2219,15 @@ sealed class MainForm : Form {
         options.Game = Path.GetFullPath(gameBox.Text.Trim().Trim('"'));
         options.SaveRoot = Path.GetFullPath(saveRootBox.Text.Trim().Trim('"'));
         options.LanMode = Value(coreMode) == "shadp2p";
-        options.NativeLan = Value(coreMode) == "native_lan";
-        options.LanHost = lanHost.Checked;
-        options.LanSeamless = lanSeamless.Checked;
-        options.LanAddress = lanAddressBox.Text.Trim();
-        options.LanNpid = lanNpidBox.Text.Trim();
-        options.LanPassword = lanPasswordBox.Text;
-        options.LanEmail = lanEmailBox.Text.Trim();
-        options.LanSecret = lanSecretBox.Text;
+        options.PublicOnline = Value(coreMode) == "public_online";
+        options.NativeLan = Value(coreMode) == "native_lan" || options.PublicOnline;
+        options.LanHost = !options.PublicOnline && lanHost.Checked;
+        options.LanSeamless = !options.PublicOnline && lanSeamless.Checked;
+        options.LanAddress = options.PublicOnline ? PublicServerAddress() : lanAddressBox.Text.Trim();
+        options.LanNpid = options.PublicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim();
+        options.LanPassword = options.PublicOnline ? onlinePasswordBox.Text : lanPasswordBox.Text;
+        options.LanEmail = options.PublicOnline ? "" : lanEmailBox.Text.Trim();
+        options.LanSecret = options.PublicOnline ? "" : lanSecretBox.Text;
         options.AutoBackup = autoBackup.Checked;
         options.OldHunters = oldHunters.Checked;
         options.DesktopLink = desktopLink.Checked;
@@ -1823,7 +2295,8 @@ sealed class MainForm : Form {
             Warn("请不要把玩家数据直接放在磁盘根目录。"); return false;
         }
         bool lanMode = Value(coreMode) == "shadp2p";
-        bool nativeLan = Value(coreMode) == "native_lan";
+        bool publicOnline = Value(coreMode) == "public_online";
+        bool nativeLan = Value(coreMode) == "native_lan" || publicOnline;
         string requiredCore = lanMode ? Path.Combine(root, "shadp2p", "client", "shadPS4.exe") :
             Path.Combine(root, "out", "bb-probe.exe");
         if (requireInstalled && !File.Exists(requiredCore)) {
@@ -1841,18 +2314,23 @@ sealed class MainForm : Form {
             }
         }
         if (lanMode || nativeLan) {
-            if (!Regex.IsMatch(lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
+            if (!Regex.IsMatch(publicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
                 Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
             }
         }
         if (lanMode || nativeLan) {
             string host;
             int port;
-            if (!TryParseLanEndpoint(lanAddressBox.Text, out host, out port)) {
-                Warn("shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
+            string address = publicOnline ? PublicServerAddress() : lanAddressBox.Text;
+            if (!TryParseLanEndpoint(address, out host, out port)) {
+                Warn(publicOnline ? "公共在线服务尚未配置，当前安装包暂不能使用在线联机。" :
+                    "shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
             }
-            if (lanPasswordBox.Text.Length == 0) { Warn("请输入联机账号密码。"); return false; }
-            if (lanHost.Checked && !IsLocalLanEndpoint(lanAddressBox.Text)) {
+            if (publicOnline && PublicPortalUrl().Length == 0) {
+                Warn("公共在线账号服务尚未配置，当前安装包暂不能使用在线联机。"); return false;
+            }
+            if ((publicOnline ? onlinePasswordBox.Text : lanPasswordBox.Text).Length == 0) { Warn("请输入联机账号密码。"); return false; }
+            if (!publicOnline && lanHost.Checked && !IsLocalLanEndpoint(lanAddressBox.Text)) {
                 Warn("已勾选“本机同时作为局域网服务器”，但服务器地址不是这台电脑。\r\n\r\n" +
                      "远程客户端请取消该勾选，只填写开服电脑的地址；只有开服电脑才需要勾选。\r\n" +
                      "当前服务器地址：" + lanAddressBox.Text.Trim());
@@ -2245,12 +2723,19 @@ sealed class MainForm : Form {
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
         state["old_hunters"] = options.OldHunters ? "1" : "0";
-        state["core_mode"] = options.LanMode ? "shadp2p" : options.NativeLan ? "native_lan" : "native";
-        state["lan_address"] = options.LanAddress;
-        state["lan_npid"] = options.LanNpid;
-        state["lan_password_dpapi"] = ProtectSecret(options.LanPassword);
-        state["lan_email"] = options.LanEmail;
-        state["lan_secret_dpapi"] = ProtectSecret(options.LanSecret);
+        state["core_mode"] = options.LanMode ? "shadp2p" : options.PublicOnline ? "public_online" :
+            options.NativeLan ? "native_lan" : "native";
+        state["lan_address"] = lanAddressBox.Text.Trim();
+        state["lan_npid"] = lanNpidBox.Text.Trim();
+        state["lan_password_dpapi"] = ProtectSecret(lanPasswordBox.Text);
+        state["lan_email"] = lanEmailBox.Text.Trim();
+        state["lan_secret_dpapi"] = ProtectSecret(lanSecretBox.Text);
+        state["online_npid"] = onlineNpidBox.Text.Trim();
+        state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
+        state["online_nickname"] = onlineNicknameBox.Text.Trim();
+        state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
+        state["online_application_id"] = onlineApplicationId;
+        state["online_application_token_dpapi"] = ProtectSecret(onlineApplicationToken);
         state["lan_host"] = options.LanHost ? "1" : "0";
         state["lan_seamless"] = options.LanSeamless ? "1" : "0";
         state["quality_profile"] = Value(qualityProfile);
@@ -2365,6 +2850,11 @@ sealed class MainForm : Form {
             Configure(options, false);
         }
         catch (Exception e) { Warn("保存设置失败：" + e.Message); return; }
+        currentRunPublic = options.PublicOnline;
+        if (options.PublicOnline) {
+            publicLoginSucceeded = false;
+            onlineLoginStatus.Text = "登录状态：准备连接（尚未认证）";
+        }
         if (options.LanMode) {
             StartLanGame(options);
             return;
@@ -2517,6 +3007,25 @@ sealed class MainForm : Form {
             lastRunLog = logPath;
             Action<string> capture = delegate(string line) {
                 if (line == null) return;
+                if (options.PublicOnline) {
+                    string host;
+                    int ignoredPort;
+                    if (TryParseLanEndpoint(options.LanAddress, out host, out ignoredPort))
+                        line = line.Replace(host, "[公共服务]");
+                    if (line.IndexOf("shadNet authentication confirmed", StringComparison.OrdinalIgnoreCase) >= 0) {
+                        publicLoginSucceeded = true;
+                        if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                            onlineLoginStatus.Text = "登录状态：已登录（" + options.LanNpid + "）";
+                            onlineLoginStatus.ForeColor = Color.DarkGreen;
+                        });
+                    } else if (line.IndexOf("shadNet authentication failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        line.IndexOf("Login rejected", StringComparison.OrdinalIgnoreCase) >= 0) {
+                        if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                            onlineLoginStatus.Text = "登录状态：认证失败，请检查账号、密码和日志";
+                            onlineLoginStatus.ForeColor = Color.Firebrick;
+                        });
+                    }
+                }
                 string hint = ShadNetLoginHint(line);
                 lock (outputLock) {
                     runLog.WriteLine(line);
@@ -2532,12 +3041,12 @@ sealed class MainForm : Form {
             capture("Game: " + options.Game);
             capture("Player data: " + options.SaveRoot);
             if (options.NativeLan) {
-                capture("Native bbport online: enabled; server=" + options.LanAddress +
+                capture("Native bbport online: enabled; server=" + (options.PublicOnline ? "[公共服务]" : options.LanAddress) +
                     "; NPID=" + options.LanNpid + "; seamless=" + (options.LanSeamless ? "on" : "off"));
                 string statusMessage = "";
                 bool online = CheckLanStatus(options.LanAddress, out statusMessage);
                 bool localEndpoint = IsLocalLanEndpoint(options.LanAddress);
-                if (!online && (options.LanHost || localEndpoint)) {
+                if (!online && !options.PublicOnline && (options.LanHost || localEndpoint)) {
                     if (!options.LanHost)
                         capture("Native bbport online: local endpoint detected; starting bundled shadNet automatically");
                     string serverError = StartLanServerProcess(options);
@@ -2548,13 +3057,14 @@ sealed class MainForm : Form {
                     }
                 }
                 if (!online) {
+                    if (options.PublicOnline) throw new IOException("公共在线服务暂时不可用，请稍后重试。");
                     string localHint = localEndpoint
                         ? " 地址指向本机，但内置服务器未能就绪；请检查 shadnet.exe、防火墙或注册密钥。"
                         : " 请确认开服电脑已启动 shadNet，并检查防火墙和联机地址。";
                     throw new IOException(statusMessage + localHint);
                 }
                 capture("Native bbport online: shadNet WebAPI reachable");
-                if (localEndpoint) {
+                if (localEndpoint && !options.PublicOnline) {
                     if (!Regex.IsMatch(options.LanNpid, @"^[A-Za-z0-9_-]{3,16}$") ||
                         options.LanPassword.Length == 0 || options.LanEmail.IndexOf('@') <= 0)
                         throw new InvalidDataException("本机 shadNet 首次使用需要填写有效的联机 ID、密码和注册邮箱。");
@@ -2629,6 +3139,12 @@ sealed class MainForm : Form {
 
     void GameFinished(string error, int exitCode, string logPath, string diagnostic) {
         busy = false;
+        if (currentRunPublic) {
+            onlineLoginStatus.Text = publicLoginSucceeded
+                ? "登录状态：未登录（上次游戏中认证成功）" : "登录状态：未登录（上次未完成认证）";
+            onlineLoginStatus.ForeColor = publicLoginSucceeded ? SystemColors.GrayText : Color.Firebrick;
+            currentRunPublic = false;
+        }
         progress.Style = ProgressBarStyle.Continuous;
         progress.Value = 0;
         UpdateButtons();
