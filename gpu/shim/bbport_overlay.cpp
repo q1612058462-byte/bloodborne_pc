@@ -321,7 +321,14 @@ void Menu() {
     ImGui::EndDisabled(); // upscaler off
 
     ImGui::SeparatorText(Tr("Output resolution"));
-    static const char* outputs[] = {"1280 x 720", "1920 x 1080", "2560 x 1440", "3840 x 2160"};
+    static const char* outputs[] = {
+        "1280 x 720 (16:9)", "1920 x 1080 (16:9)", "2560 x 1440 (16:9)",
+        "3840 x 2160 (16:9)", "640 x 360 (16:9)", "960 x 540 (16:9)",
+        "1440 x 810 (16:9)", "1600 x 900 (16:9)", "1280 x 800 (16:10)",
+        "1920 x 1200 (16:10)", "2560 x 1600 (16:10)", "2560 x 1080 (wide)",
+        "3440 x 1440 (wide)", "5120 x 2160 (wide)", "3840 x 1080 (superwide)",
+        "5120 x 1440 (superwide)", "1280 x 960 (4:3)", "1440 x 1080 (4:3)"};
+    static_assert(sizeof(outputs) / sizeof(outputs[0]) == BbSettings::OutputCount);
     int output = s.output_res;
     if (ImGui::BeginCombo(Tr("Output resolution"), outputs[output])) {
         for (int i = 0; i < BbSettings::OutputCount; ++i) {

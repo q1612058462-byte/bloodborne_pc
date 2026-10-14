@@ -425,7 +425,15 @@ sealed class MainForm : Form {
 
     static readonly Choice[] Resolutions = {
         new Choice("1280 × 720", "1280x720"), new Choice("1920 × 1080", "1920x1080"),
-        new Choice("2560 × 1440", "2560x1440"), new Choice("3840 × 2160", "3840x2160") };
+        new Choice("2560 × 1440", "2560x1440"), new Choice("3840 × 2160", "3840x2160"),
+        new Choice("640 × 360（16:9）", "640x360"), new Choice("960 × 540（16:9）", "960x540"),
+        new Choice("1440 × 810（16:9）", "1440x810"), new Choice("1600 × 900（16:9）", "1600x900"),
+        new Choice("1280 × 800（16:10）", "1280x800"), new Choice("1920 × 1200（16:10）", "1920x1200"),
+        new Choice("2560 × 1600（16:10）", "2560x1600"),
+        new Choice("2560 × 1080（宽屏）", "2560x1080"), new Choice("3440 × 1440（宽屏）", "3440x1440"),
+        new Choice("5120 × 2160（宽屏）", "5120x2160"),
+        new Choice("3840 × 1080（双宽）", "3840x1080"), new Choice("5120 × 1440（双宽）", "5120x1440"),
+        new Choice("1280 × 960（4:3）", "1280x960"), new Choice("1440 × 1080（4:3）", "1440x1080") };
     static readonly Choice[] FrameRates = {
         new Choice("不限制（跟随显示器）", "uncap"), new Choice("90 FPS", "90"),
         new Choice("60 FPS", "60"), new Choice("30 FPS（原版）", "30") };
@@ -2356,6 +2364,9 @@ sealed class MainForm : Form {
     static string Default(string key) { return Get(Defaults, key, ""); }
     static string DefaultResolution() {
         Rectangle screen = Screen.PrimaryScreen.Bounds;
+        string native = screen.Width.ToString() + "x" + screen.Height.ToString();
+        foreach (Choice choice in Resolutions)
+            if (choice.Value == native) return native;
         if (screen.Width >= 3840 && screen.Height >= 2160) return "3840x2160";
         if (screen.Width >= 2560 && screen.Height >= 1440) return "2560x1440";
         return "1920x1080";

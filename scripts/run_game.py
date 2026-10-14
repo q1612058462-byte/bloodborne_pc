@@ -398,6 +398,13 @@ def main():
             if live == 'auto':
                 live = gpu_check(caps)
             live = '1' if live == '1' else '0'
+            # The authored non-16:9 patches also adjust game-space lock-on and HUD
+            # coordinates. The live path changes only host targets, so it cannot use
+            # those fixes without a restart-time guest patch.
+            output_width, output_height = (int(part) for part in scaled_output.split('x'))
+            if output_width * 9 != output_height * 16 and live == '1':
+                print('Non-16:9 output: using the startup aspect-ratio patch (live mode unavailable)')
+                live = '0'
         if live == '1':
             print(f'Output {scaled_output}: live resolution changes (live_resolution=0: startup patch)')
         elif scaled_output:

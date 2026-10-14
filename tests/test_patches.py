@@ -1,11 +1,12 @@
 from paths import ROOT
 import struct
+import re
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from patches import (EBOOT_BASE, OUTPUT_SIZE, RESOLUTION_TEMPLATE, SCENE_HEIGHT,
+from patches import (EBOOT_BASE, OUTPUT_SIZE, RESOLUTION_TEMPLATE, RESOLUTION_PATCHES, SCENE_HEIGHT,
                      SCENE_WIDTH, UI_HEIGHT, UI_WIDTH, compile_patches,
                      render_size, resolution_writes, scaled_sizes, effect_patches,
                      validate_patch_requirements, external_patches, external_selection,
@@ -26,6 +27,16 @@ def immediate(writes, address):
 
 
 class NativeUiTests(unittest.TestCase):
+    def test_launcher_and_gpu_resolution_catalogs_match(self):
+        source = (ROOT / 'tools/setup/BbportPortable.cs').read_text(encoding='utf-8')
+        choices = source.split('static readonly Choice[] Resolutions = {', 1)[1].split('};', 1)[0]
+        launcher = re.findall(r'new Choice\("[^"]+", "(\d+)x(\d+)"\)', choices)
+        header = (ROOT / 'gpu/shim/bbport_settings.h').read_text(encoding='utf-8')
+        widths = re.findall(r'\d+', header.split('OutputWidths[] = {', 1)[1].split('};', 1)[0])
+        heights = re.findall(r'\d+', header.split('OutputHeights[] = {', 1)[1].split('};', 1)[0])
+        self.assertEqual(launcher, list(zip(widths, heights)))
+        self.assertEqual(len(launcher), len(RESOLUTION_PATCHES) + 1)  # native 1920x1080
+
     def test_presets_keep_ui_native(self):
         for preset, expected in [(1, (1280, 720)), (2, (1130, 636)),
                                  (3, (960, 540)), (4, (640, 360))]:
@@ -51,6 +62,25 @@ class NativeUiTests(unittest.TestCase):
         changed = {SCENE_WIDTH, SCENE_HEIGHT, UI_WIDTH, UI_HEIGHT}
         self.assertEqual([w for w in original if w[0] not in changed],
                          [w for w in modified if w[0] not in changed])
+
+    def test_every_authored_output_uses_its_own_aspect_patch(self):
+        changed = {SCENE_WIDTH, SCENE_HEIGHT, UI_WIDTH, UI_HEIGHT}
+        for output, aspect in RESOLUTION_PATCHES.items():
+            with self.subTest(output=output):
+                name = f'Resolution Patch {output[0]}x{output[1]} ({aspect})'
+                original = compile_patches(XML, [name], '01.09', SEGMENTS)
+                modified = resolution_writes(XML, (800, 450), '01.09', SEGMENTS,
+                                             output=output)
+                self.assertEqual([w for w in original if w[0] not in changed],
+                                 [w for w in modified if w[0] not in changed])
+                self.assertEqual(immediate(modified, SCENE_WIDTH)[1], 800)
+                self.assertEqual(immediate(modified, SCENE_HEIGHT)[1], 450)
+                self.assertEqual(immediate(modified, UI_WIDTH)[1], 1920)
+                self.assertEqual(immediate(modified, UI_HEIGHT)[1], 1080)
+
+    def test_unknown_non_widescreen_output_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unsupported output aspect ratio'):
+            resolution_writes(XML, (800, 600), '01.09', SEGMENTS, output=(1680, 1050))
 
     def test_unexpected_or_missing_ui_instruction_is_rejected(self):
         for remove in (False, True):
