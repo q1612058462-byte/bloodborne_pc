@@ -76,6 +76,148 @@ sealed class OnlinePlayer {
     public string Title;
 }
 
+// The current renderer stores GPU-specific .meta/.spv files and cannot rebuild them from
+// portable shader sources. Only accept caches from this release and an identical GPU profile.
+public static class ShaderCacheTools {
+    const string TitleId = "CUSA03173";
+    const string ManifestName = "bbport-cache-manifest.txt";
+    const long MaxArchiveBytes = 1024L * 1024 * 1024;
+    const long MaxFileBytes = 64L * 1024 * 1024;
+    const int MaxArchiveEntries = 100000;
+
+    public static string DirectoryPath(string playerRoot) {
+        return Path.Combine(playerRoot, "cache", TitleId);
+    }
+
+    static bool CacheFile(string name) {
+        if (name == "profile.bin") return true;
+        if (!Regex.IsMatch(name, @"^[A-Za-z0-9_-]+\.(?:key|meta|spv)$", RegexOptions.IgnoreCase)) return false;
+        return true;
+    }
+
+    public static string Status(string playerRoot) {
+        string path = DirectoryPath(playerRoot);
+        if (!Directory.Exists(path)) return "尚无 Shader 缓存。首次进入游戏后会在此生成。\r\n目录：" + path;
+        int count = 0;
+        long bytes = 0;
+        foreach (string file in System.IO.Directory.GetFiles(path)) {
+            if (!CacheFile(Path.GetFileName(file))) continue;
+            ++count;
+            bytes += new FileInfo(file).Length;
+        }
+        return string.Format("{0} 个缓存文件，{1:N1} MB；GPU 配置：{2}\r\n目录：{3}",
+            count, bytes / 1048576.0, File.Exists(Path.Combine(path, "profile.bin")) ? "已记录" : "未记录", path);
+    }
+
+    static string Manifest(string version) { return "bbport-shader-cache-v1\n" + version + "\n" + TitleId + "\n"; }
+
+    public static int Export(string playerRoot, string destination, string version) {
+        string source = DirectoryPath(playerRoot);
+        string sourcePrefix = Path.GetFullPath(source).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (Path.GetFullPath(destination).StartsWith(sourcePrefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("请将导出的 ZIP 保存到 Shader 缓存目录之外。");
+        if (!File.Exists(Path.Combine(source, "profile.bin")))
+            throw new InvalidDataException("尚无可导出的本机 GPU 缓存。请先启动一次原生 bbport 游戏。");
+        List<string> files = new List<string>();
+        foreach (string file in System.IO.Directory.GetFiles(source))
+            if (CacheFile(Path.GetFileName(file))) files.Add(file);
+        string temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+        try {
+            using (FileStream output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (ZipArchive archive = new ZipArchive(output, ZipArchiveMode.Create)) {
+                ZipArchiveEntry manifest = archive.CreateEntry(ManifestName, CompressionLevel.Optimal);
+                using (StreamWriter writer = new StreamWriter(manifest.Open(), new UTF8Encoding(false)))
+                    writer.Write(Manifest(version));
+                foreach (string file in files) {
+                    ZipArchiveEntry entry = archive.CreateEntry(TitleId + "/" + Path.GetFileName(file),
+                        CompressionLevel.Optimal);
+                    using (Stream input = File.OpenRead(file)) using (Stream target = entry.Open()) input.CopyTo(target);
+                }
+            }
+            if (File.Exists(destination)) File.Replace(temporary, destination, null);
+            else File.Move(temporary, destination);
+            return files.Count;
+        } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    public static int Import(string playerRoot, string archivePath, string version) {
+        string target = DirectoryPath(playerRoot);
+        string profilePath = Path.Combine(target, "profile.bin");
+        if (!File.Exists(profilePath))
+            throw new InvalidDataException("先启动一次原生 bbport 游戏，以生成本机 GPU 配置，再导入同配置缓存。");
+        List<ZipArchiveEntry> selected = new List<ZipArchiveEntry>();
+        List<string> added = new List<string>();
+        try {
+            using (ZipArchive archive = ZipFile.OpenRead(archivePath)) {
+                ZipArchiveEntry manifest = archive.GetEntry(ManifestName);
+                if (manifest == null || manifest.Length > 256)
+                    throw new InvalidDataException("这不是当前启动器导出的 Shader 缓存包。");
+                using (StreamReader reader = new StreamReader(manifest.Open(), Encoding.UTF8))
+                    if (reader.ReadToEnd() != Manifest(version))
+                        throw new InvalidDataException("缓存包版本不匹配。请使用相同版本的启动器导出。");
+                ZipArchiveEntry sourceProfile = archive.GetEntry(TitleId + "/profile.bin");
+                if (sourceProfile == null || sourceProfile.Length != new FileInfo(profilePath).Length ||
+                    sourceProfile.Length > 4096)
+                    throw new InvalidDataException("缓存包缺少兼容的 GPU 配置。");
+                byte[] local = File.ReadAllBytes(profilePath);
+                byte[] incoming = new byte[local.Length];
+                using (Stream stream = sourceProfile.Open()) {
+                    int offset = 0, read;
+                    while (offset < incoming.Length && (read = stream.Read(incoming, offset, incoming.Length - offset)) > 0)
+                        offset += read;
+                    if (offset != incoming.Length || stream.ReadByte() != -1)
+                        throw new InvalidDataException("GPU 配置文件不完整。");
+                }
+                bool sameProfile = true;
+                for (int i = 0; i < local.Length; ++i) if (local[i] != incoming[i]) { sameProfile = false; break; }
+                if (!sameProfile)
+                    throw new InvalidDataException("显卡或 Shader 配置不同；当前版本不能跨显卡导入缓存。");
+                long total = 0;
+                HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (ZipArchiveEntry entry in archive.Entries) {
+                    if (entry.FullName == ManifestName || entry.FullName == TitleId + "/profile.bin") continue;
+                    string prefix = TitleId + "/";
+                    if (!entry.FullName.StartsWith(prefix, StringComparison.Ordinal) ||
+                        !CacheFile(entry.FullName.Substring(prefix.Length)) ||
+                        !names.Add(entry.FullName.Substring(prefix.Length)) ||
+                        selected.Count >= MaxArchiveEntries ||
+                        entry.Length > MaxFileBytes || entry.Length < 0 ||
+                        total > MaxArchiveBytes - entry.Length)
+                        throw new InvalidDataException("缓存包包含不支持、重复或过大的文件：" + entry.FullName);
+                    total += entry.Length;
+                    selected.Add(entry);
+                }
+                foreach (ZipArchiveEntry entry in selected) {
+                    string destination = Path.Combine(target, entry.FullName.Substring(TitleId.Length + 1));
+                    if (File.Exists(destination)) continue;
+                    string temporary = destination + ".import-" + Guid.NewGuid().ToString("N");
+                    try {
+                        using (Stream input = entry.Open())
+                        using (FileStream output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                            byte[] buffer = new byte[65536];
+                            long written = 0;
+                            int read;
+                            while ((read = input.Read(buffer, 0, buffer.Length)) > 0) {
+                                written += read;
+                                if (written > entry.Length || written > MaxFileBytes)
+                                    throw new InvalidDataException("缓存包文件大小与记录不符。");
+                                output.Write(buffer, 0, read);
+                            }
+                            if (written != entry.Length) throw new InvalidDataException("缓存包文件未完整读取。");
+                        }
+                        File.Move(temporary, destination);
+                        added.Add(destination);
+                    } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                }
+            }
+            return added.Count;
+        } catch {
+            foreach (string path in added) if (File.Exists(path)) File.Delete(path);
+            throw;
+        }
+    }
+}
+
 sealed class SaveValidation {
     public string Directory;
     public string TitleId;
@@ -553,6 +695,9 @@ sealed class MainForm : Form {
     ComboBox resolution, frameRate, upscaler, preset, live, modelLod, language, presentMode;
     ComboBox qualityProfile;
     CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink, oldHunters;
+    CheckBox shaderFrameStats, shaderGpuProfile;
+    Label shaderCacheStatus;
+    Button shaderExportButton, shaderImportButton;
     CheckBox mouseEnabled, mouseInvert;
     NumericUpDown mouseSensitivity;
     ComboBox mouseLeft, mouseRight, mouseMiddle, mouseX1, mouseX2, mouseWheelUp, mouseWheelDown;
@@ -703,6 +848,7 @@ sealed class MainForm : Form {
         Image background = LauncherBackground();
         tabs = new TabControl { Dock = DockStyle.Fill };
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage onlinePage = new TabPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
@@ -712,6 +858,7 @@ sealed class MainForm : Form {
         TabPage helpPage = new TabPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
         logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
         tabs.TabPages.Add(settingsPage);
+        tabs.TabPages.Add(shaderPage);
         tabs.TabPages.Add(lanPage);
         tabs.TabPages.Add(onlinePage);
         tabs.TabPages.Add(inputPage);
@@ -722,6 +869,7 @@ sealed class MainForm : Form {
         tabs.TabPages.Add(logPage);
         tabs.SelectedIndexChanged += delegate {
             if (tabs.SelectedTab == onlinePage) RefreshPublicStatus();
+            if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
         };
         if (background != null) {
             foreach (TabPage page in tabs.TabPages) {
@@ -814,6 +962,36 @@ sealed class MainForm : Form {
         AddSpan(extras, Flow(desktopLink, startMenuLink));
         AddSpan(extras, Note("启动器界面为中文；当前上游游戏内设置菜单只提供英语和俄语。"));
         column.Controls.Add(extras.Parent);
+
+        TableLayoutPanel shaderColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        shaderColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        shaderPage.Controls.Add(shaderColumn);
+        TableLayoutPanel cacheGroup = Group("Shader 缓存", 2);
+        shaderCacheStatus = Note("正在读取缓存状态…");
+        AddSpan(cacheGroup, shaderCacheStatus);
+        FlowLayoutPanel cacheButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill,
+            WrapContents = true };
+        shaderExportButton = new Button { Text = "导出缓存 ZIP…", AutoSize = true };
+        shaderImportButton = new Button { Text = "导入缓存 ZIP…", AutoSize = true };
+        Button shaderRefreshButton = new Button { Text = "刷新状态", AutoSize = true };
+        shaderExportButton.Click += delegate { ExportShaderCache(); };
+        shaderImportButton.Click += delegate { ImportShaderCache(); };
+        shaderRefreshButton.Click += delegate { RefreshShaderCache(); };
+        cacheButtons.Controls.AddRange(new Control[] { shaderExportButton, shaderImportButton, shaderRefreshButton });
+        AddSpan(cacheGroup, cacheButtons);
+        AddSpan(cacheGroup, Note("当前只支持同一启动器版本、相同 GPU 配置的缓存合并；导入不会覆盖已有文件。" +
+            "跨显卡共享需要渲染器保存并重建 Shader 源数据，目前不支持。缓存含从游戏生成的数据，只应与拥有游戏的玩家共享。"));
+        shaderColumn.Controls.Add(cacheGroup.Parent);
+
+        TableLayoutPanel diagnostics = Group("画面诊断（可选）", 2);
+        shaderFrameStats = Check("记录帧时间与编译等待（BB_FRAME_STATS）");
+        shaderGpuProfile = Check("记录 GPU 各渲染阶段耗时（BB_GPU_PROFILE）");
+        AddSpan(diagnostics, shaderFrameStats);
+        AddSpan(diagnostics, shaderGpuProfile);
+        AddSpan(diagnostics, Note("诊断信息写入运行日志，可能增加少量开销；正常游玩建议保持关闭。" +
+            "现有升频、动态分辨率和画面选项仍在“设置”页，游戏内按 Insert 也可打开画面菜单。"));
+        shaderColumn.Controls.Add(diagnostics.Parent);
 
         TableLayoutPanel lanColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -1019,6 +1197,7 @@ sealed class MainForm : Form {
         savePage.Controls.Add(saveColumn);
         TableLayoutPanel saveLocation = Group("独立存档目录", 3);
         saveRootBox = new TextBox { Dock = DockStyle.Fill };
+        saveRootBox.TextChanged += delegate { if (shaderCacheStatus != null) RefreshShaderCache(); };
         AddRow(saveLocation, "玩家数据目录", saveRootBox, Browse(saveRootBox, "选择独立的玩家数据和存档目录"));
         autoBackup = Check("启动前和退出后自动备份存档（最多保留 20 份自动备份）");
         AddSpan(saveLocation, autoBackup);
@@ -1352,6 +1531,8 @@ sealed class MainForm : Form {
         fullscreen.Checked = Get(ini, "fullscreen", "1") == "1";
         showFps.Checked = Get(ini, "show_fps", Default("show_fps")) == "1";
         sharpen.Checked = Get(ini, "sharpen", Default("sharpen")) == "1";
+        shaderFrameStats.Checked = Get(state, "shader_frame_stats", "0") == "1";
+        shaderGpuProfile.Checked = Get(state, "shader_gpu_profile", "0") == "1";
         foreach (KeyValuePair<string, CheckBox> effect in effects) {
             string fallback = "0";
             foreach (string[] definition in EffectDefinitions) if (definition[0] == effect.Key) fallback = definition[2];
@@ -1381,6 +1562,7 @@ sealed class MainForm : Form {
         preset.Enabled = UpscalerUsesPreset(Value(upscaler));
         CheckGame();
         RefreshSaveManager();
+        RefreshShaderCache();
     }
 
     void ShowWelcomeOnce() {
@@ -2422,6 +2604,8 @@ sealed class MainForm : Form {
         options.Env["BB_FPS"] = Value(frameRate);
         options.Env["BB_LANGUAGE"] = Value(language);
         options.Env["BB_PRESENT_MODE"] = Value(presentMode);
+        options.Env["BB_FRAME_STATS"] = shaderFrameStats.Checked ? "1" : "";
+        options.Env["BB_GPU_PROFILE"] = shaderGpuProfile.Checked ? "1" : "";
         foreach (KeyValuePair<string, ComboBox> binding in keyBindings)
             options.Env["BB_KEY_" + binding.Key] = Value(binding.Value);
         foreach (KeyValuePair<string, ComboBox> binding in gamepadBindings)
@@ -2559,6 +2743,94 @@ sealed class MainForm : Form {
     }
 
     void Warn(string text) { MessageBox.Show(this, text, TitleText, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+
+    string NativeCachePlayerRoot() {
+        string value = saveRootBox.Text.Trim().Trim('"');
+        return Path.GetFullPath(value.Length == 0 ? SaveTools.DefaultRoot : value);
+    }
+
+    void RefreshShaderCache() {
+        if (shaderCacheStatus == null) return;
+        try { shaderCacheStatus.Text = ShaderCacheTools.Status(NativeCachePlayerRoot()); }
+        catch (Exception e) { shaderCacheStatus.Text = "无法读取 Shader 缓存：" + e.Message; }
+    }
+
+    void ExportShaderCache() {
+        if (busy) return;
+        if (NativeCoreRunning()) { Warn("游戏核心正在运行，请退出游戏后再导出 Shader 缓存。"); return; }
+        string playerRoot;
+        try { playerRoot = NativeCachePlayerRoot(); }
+        catch (Exception e) { Warn("玩家数据目录无效：" + e.Message); return; }
+        using (SaveFileDialog dialog = new SaveFileDialog { Filter = "Shader 缓存 ZIP (*.zip)|*.zip",
+            FileName = "bbport-shader-cache-" + PackageVersion + ".zip", OverwritePrompt = true }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            string destination = dialog.FileName;
+            busy = true;
+            UpdateButtons();
+            progress.Style = ProgressBarStyle.Marquee;
+            statusLabel.Text = "正在导出 Shader 缓存…";
+            ThreadPool.QueueUserWorkItem(delegate {
+                int count = 0;
+                string error = null;
+                try { count = ShaderCacheTools.Export(playerRoot, destination, PackageVersion); }
+                catch (Exception e) { error = e.Message; }
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke((Action)delegate {
+                    busy = false;
+                    progress.Style = ProgressBarStyle.Continuous;
+                    progress.Value = 0;
+                    UpdateButtons();
+                    RefreshShaderCache();
+                    if (error != null) Warn("导出 Shader 缓存失败：" + error);
+                    else {
+                        statusLabel.Text = "已导出 " + count + " 个 Shader 缓存文件。";
+                        Log("Shader 缓存已导出：" + destination);
+                    }
+                });
+            });
+        }
+    }
+
+    void ImportShaderCache() {
+        if (busy) return;
+        if (NativeCoreRunning()) { Warn("游戏核心正在运行，请退出游戏后再导入 Shader 缓存。"); return; }
+        string playerRoot;
+        try { playerRoot = NativeCachePlayerRoot(); }
+        catch (Exception e) { Warn("玩家数据目录无效：" + e.Message); return; }
+        using (OpenFileDialog dialog = new OpenFileDialog { Filter = "Shader 缓存 ZIP (*.zip)|*.zip",
+            CheckFileExists = true }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            string source = dialog.FileName;
+            busy = true;
+            UpdateButtons();
+            progress.Style = ProgressBarStyle.Marquee;
+            statusLabel.Text = "正在验证并导入 Shader 缓存…";
+            ThreadPool.QueueUserWorkItem(delegate {
+                int count = 0;
+                string error = null;
+                try { count = ShaderCacheTools.Import(playerRoot, source, PackageVersion); }
+                catch (Exception e) { error = e.Message; }
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke((Action)delegate {
+                    busy = false;
+                    progress.Style = ProgressBarStyle.Continuous;
+                    progress.Value = 0;
+                    UpdateButtons();
+                    RefreshShaderCache();
+                    if (error != null) Warn("导入 Shader 缓存失败：" + error);
+                    else {
+                        statusLabel.Text = "已合并 " + count + " 个新 Shader 缓存文件；现有文件未覆盖。";
+                        Log("Shader 缓存已导入：" + source + "；新增 " + count + " 个文件。");
+                    }
+                });
+            });
+        }
+    }
+
+    static bool NativeCoreRunning() {
+        try { return Process.GetProcessesByName("bb-probe").Length > 0; }
+        catch { return true; }
+    }
 
     string SaveRootPath() {
         string value = saveRootBox.Text.Trim().Trim('"');
@@ -2929,6 +3201,8 @@ sealed class MainForm : Form {
         state["fps"] = options.Env["BB_FPS"];
         state["language"] = options.Env["BB_LANGUAGE"];
         state["present_mode"] = options.Env["BB_PRESENT_MODE"];
+        state["shader_frame_stats"] = shaderFrameStats.Checked ? "1" : "0";
+        state["shader_gpu_profile"] = shaderGpuProfile.Checked ? "1" : "0";
         state["desktop_link"] = options.DesktopLink ? "1" : "0";
         state["start_menu_link"] = options.StartMenuLink ? "1" : "0";
         foreach (KeyValuePair<string, string> item in options.Env)
@@ -3378,6 +3652,8 @@ sealed class MainForm : Form {
         installButton.Enabled = !busy;
         saveButton.Enabled = !busy;
         playButton.Enabled = !busy;
+        if (shaderExportButton != null) shaderExportButton.Enabled = !busy;
+        if (shaderImportButton != null) shaderImportButton.Enabled = !busy;
         if (lanStartServerButton != null)
             lanStartServerButton.Enabled = !busy && (shadNetProcess == null || shadNetProcess.HasExited);
         if (lanStopServerButton != null)

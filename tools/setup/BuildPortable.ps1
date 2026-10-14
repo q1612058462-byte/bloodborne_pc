@@ -153,6 +153,7 @@ $buildInfo = @(
     'Local feature: stable save root, validation, import/export and automatic backups'
     'Local feature: v1.09 trainer cheats (health, echoes and upgrade items), centered IME popup and detailed crash diagnostics'
     'Local feature: bundled FSR 4 v07 and NVIDIA DLSS models; optional user-provided FSR 4.1.1 assets'
+    'Local feature: shader cache status and same-version/same-GPU ZIP merge; optional frame/GPU diagnostics'
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
     'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
