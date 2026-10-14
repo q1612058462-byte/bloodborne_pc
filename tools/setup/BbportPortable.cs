@@ -558,10 +558,10 @@ sealed class MainForm : Form {
     TextBox onlineNpidBox, onlinePasswordBox, onlineQqBox, onlineNicknameBox;
     CheckBox onlineShowInList;
     Label onlineServiceStatus, onlineCountStatus, onlineLoginStatus, onlineApplicationStatus,
-        onlineTailscaleStatus;
+        onlineTailscaleStatus, onlineHeadscaleStatus;
     ListView onlineUsersList;
     Button onlineRefreshButton, onlineApplyButton, onlineQueryButton, onlineRegisterButton,
-        onlineTailscaleButton;
+        onlineTailscaleButton, onlineHeadscaleButton;
     string onlineApplicationId = "", onlineApplicationToken = "", onlineRegistrationKey = "";
     CheckBox lanHost, lanSeamless;
     Label lanStatus;
@@ -578,6 +578,9 @@ sealed class MainForm : Form {
     volatile bool busy;
     Process launcherProcess;
     Process shadNetProcess;
+    Process embeddedNetProcess;
+    volatile string embeddedNetIp = "";
+    string lastEmbeddedAuthUrl = "";
     readonly object shadNetLogLock = new object();
     string lastRunLog;
     string expectedProbeHash;
@@ -915,13 +918,17 @@ sealed class MainForm : Form {
         onlineColumn.Controls.Add(onlineAccount.Parent);
         TableLayoutPanel onlineGuide = Group("联机步骤", 2);
         AddSpan(onlineGuide, Note("1. 与朋友安装同一版本并分别领取账号。\r\n2. 确认两台电脑具备互相可达的安全网络连接。\r\n3. 游戏内使用相同联机密码，在可联机区域由房主摇召唤钟，另一人摇小共鸣钟。\r\n4. 灰色铃铛通常意味着当前区域或游戏状态不允许召唤。"));
-        AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一 Tailscale 网络；只连得上服务器而玩家之间不通，仍可能无法召唤。"));
-        onlineTailscaleStatus = Note("Tailscale：尚未检测（需用户自行安装并加入受控网络）");
+        AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一私网；Headscale 负责设备入网，shadNet 仍负责游戏账号与召唤。只连得上控制服务器而玩家之间不通，仍可能无法召唤。"));
+        onlineHeadscaleStatus = Note("自建私网控制服务：尚未检测");
+        AddSpan(onlineGuide, onlineHeadscaleStatus);
+        onlineTailscaleStatus = Note("内置私网：尚未连接（无需安装系统级 Tailscale）");
         AddSpan(onlineGuide, onlineTailscaleStatus);
-        onlineTailscaleButton = new Button { Text = "检测 Tailscale 连接", AutoSize = true };
+        onlineHeadscaleButton = new Button { Text = "连接内置私网", AutoSize = true };
+        onlineHeadscaleButton.Click += delegate { ConnectHeadscale(); };
+        onlineTailscaleButton = new Button { Text = "检测内置私网", AutoSize = true };
         onlineTailscaleButton.Click += delegate { RefreshTailscaleStatus(); };
-        AddSpan(onlineGuide, Flow(onlineTailscaleButton));
-        AddSpan(onlineGuide, Link("下载 Tailscale（官方）", "https://tailscale.com/download"));
+        AddSpan(onlineGuide, Flow(onlineHeadscaleButton, onlineTailscaleButton));
+        AddSpan(onlineGuide, Note("启动器附带独立的 userspace 私网节点，不安装虚拟网卡，也不切换电脑现有的 Tailscale 网络。首次连接需在浏览器完成设备授权，并由管理员审批；不会保存共享入网密钥。当前仅限本地测试，玩家互通仍需双机验证。"));
         onlineColumn.Controls.Add(onlineGuide.Parent);
 
         TableLayoutPanel helpColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
@@ -1395,7 +1402,16 @@ sealed class MainForm : Form {
     }
 
     static string PublicServerAddress() { return OnlinePackageSetting("server"); }
+    static string OverlayServerIp() {
+        string value = OnlinePackageSetting("overlay_server");
+        IPAddress ip;
+        if (!IPAddress.TryParse(value, out ip) || ip.AddressFamily != AddressFamily.InterNetwork)
+            return "";
+        byte[] bytes = ip.GetAddressBytes();
+        return bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127 ? value : "";
+    }
     static bool PublicServiceIsLoopback() {
+        if (OverlayServerIp().Length != 0) return false;
         string host;
         int port;
         IPAddress address;
@@ -1409,6 +1425,30 @@ sealed class MainForm : Form {
         return Uri.TryCreate(value, UriKind.Absolute, out uri) &&
             (uri.Scheme == "http" || uri.Scheme == "https") && uri.UserInfo.Length == 0 &&
             uri.PathAndQuery == "/" ? value : "";
+    }
+    bool EmbeddedNetReady() {
+        return embeddedNetIp.Length != 0 && embeddedNetProcess != null && !embeddedNetProcess.HasExited;
+    }
+    string EffectivePublicPortalUrl() {
+        if (OverlayServerIp().Length != 0)
+            return EmbeddedNetReady() ? "http://127.0.0.2:18080" : "";
+        return PublicPortalUrl();
+    }
+
+    static string HeadscaleControlUrl() {
+        string value = OnlinePackageSetting("control").TrimEnd('/');
+        Uri uri;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || uri.UserInfo.Length != 0 ||
+            uri.PathAndQuery != "/" || uri.Fragment.Length != 0 ||
+            (uri.Scheme != "http" && uri.Scheme != "https")) return "";
+        if (uri.Scheme == "http" && !IPAddress.IsLoopback(ResolveAddress(uri.Host))) return "";
+        return uri.AbsoluteUri.TrimEnd('/');
+    }
+
+    static IPAddress ResolveAddress(string host) {
+        IPAddress address;
+        return IPAddress.TryParse(host, out address) ? address :
+            (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ? IPAddress.Loopback : IPAddress.None);
     }
 
     static string Get(Dictionary<string, string> map, string key, string fallback) {
@@ -1759,11 +1799,11 @@ sealed class MainForm : Form {
         } catch (Exception e) { message = "无法连接服务器：" + e.Message; return false; }
     }
 
-    static bool CheckPublicStatus(out string message, out int onlinePlayers,
+    bool CheckPublicStatus(out string message, out int onlinePlayers,
                                   out List<OnlinePlayer> players) {
         onlinePlayers = -1;
         players = new List<OnlinePlayer>();
-        string portal = PublicPortalUrl();
+        string portal = EffectivePublicPortalUrl();
         if (portal.Length == 0) {
             message = "公共服务尚未配置，暂不能使用在线联机。"; return false;
         }
@@ -1853,50 +1893,175 @@ sealed class MainForm : Form {
         worker.Start();
     }
 
-    void RefreshTailscaleStatus() {
-        onlineTailscaleButton.Enabled = false;
-        onlineTailscaleStatus.Text = "Tailscale：正在检测……";
-        Thread worker = new Thread(new ThreadStart(delegate {
-            string message;
-            bool connected = false;
-            try {
-                string installed = Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe");
-                if (!File.Exists(installed)) installed = "tailscale.exe";
-                ProcessStartInfo info = new ProcessStartInfo(installed, "status --json") {
-                    UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardOutput = true
-                };
-                using (Process process = Process.Start(info)) {
-                    Task<string> output = Task.Factory.StartNew<string>(delegate {
-                        return process.StandardOutput.ReadToEnd();
-                    });
-                    if (!process.WaitForExit(4000)) {
-                        try { process.Kill(); } catch { }
-                        throw new IOException("检测超时，请确认 Tailscale 已启动。");
-                    }
-                    if (process.ExitCode != 0) throw new IOException("客户端未连接或尚未登录。");
-                    Dictionary<string, object> status = JsonSerializer().DeserializeObject(
-                        output.Result) as Dictionary<string, object>;
-                    connected = status != null && PublicField(status, "BackendState") == "Running";
-                    message = connected ? "Tailscale：已连接尾网，请确认朋友也在同一受控网络。" :
-                        "Tailscale：未连接，请在客户端完成登录。";
-                }
-            } catch (Exception e) {
-                message = "Tailscale：无法确认连接（" + e.Message + "）";
-            }
-            if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
-                onlineTailscaleButton.Enabled = true;
-                onlineTailscaleStatus.Text = message;
-                onlineTailscaleStatus.ForeColor = connected ? Color.DarkGreen : Color.Firebrick;
-            });
-        }));
-        worker.IsBackground = true;
-        worker.Start();
+    static void CheckHeadscaleHealth(string control) {
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(control + "/health");
+        request.Method = "GET";
+        request.Timeout = 3000;
+        request.ReadWriteTimeout = 3000;
+        using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) {
+            if (response.StatusCode != HttpStatusCode.OK)
+                throw new IOException("Headscale 健康检查失败：HTTP " + (int)response.StatusCode);
+        }
     }
 
-    static Dictionary<string, object> OnlinePortalRequest(string route, Dictionary<string, object> body) {
-        string portal = PublicPortalUrl();
+    void ConnectHeadscale() {
+        string control = HeadscaleControlUrl();
+        if (control.Length == 0) {
+            MessageBox.Show(this, "未配置有效的 Headscale 控制地址。正式服务须使用 HTTPS；HTTP 仅允许本机回环地址。",
+                "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        try {
+            if (embeddedNetProcess != null && !embeddedNetProcess.HasExited) {
+                RefreshTailscaleStatus();
+                return;
+            }
+            string root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
+            string executable = Path.Combine(root, "net", "bbport-net.exe");
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("未找到内置私网组件。请先安装／更新运行环境。", executable);
+            CheckHeadscaleHealth(control);
+            onlineHeadscaleStatus.Text = "自建私网控制服务：可连接（仅确认控制端健康）";
+            onlineHeadscaleStatus.ForeColor = Color.DarkGreen;
+            DialogResult choice = MessageBox.Show(this,
+                "将启动随启动器附带的独立私网节点。首次入网将使用已注册的在线账号自动申请一次性设备凭据；" +
+                "只有控制端健康不代表两台玩家电脑已互通。\r\n\r\n继续吗？",
+                "连接自建私网", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (choice != DialogResult.Yes) return;
+            string state = Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData), "BloodbornePC", "embedded-net");
+            Directory.CreateDirectory(state);
+            string identityDir = Path.Combine(state, "identity");
+            string enrolledMarker = Path.Combine(state, "enrolled-control.txt");
+            string deviceKey = "";
+            string enrolledControl = File.Exists(enrolledMarker) ? File.ReadAllText(enrolledMarker).Trim() : "";
+            bool hasIdentity = File.Exists(Path.Combine(identityDir, "tailscaled.state"));
+            bool knownEnrolled = hasIdentity && String.Equals(enrolledControl, control,
+                StringComparison.OrdinalIgnoreCase);
+            // Older builds discarded the account token after registration. Let their already
+            // authorized identity reconnect; a new or failed identity needs a fresh key.
+            if (!knownEnrolled && (!hasIdentity ||
+                (onlineApplicationId.Length > 0 && onlineApplicationToken.Length > 0))) {
+                if (onlineApplicationId.Length == 0 || onlineApplicationToken.Length == 0)
+                    throw new InvalidOperationException("请先在在线联机页完成账号申请和注册，才能自动加入私网。");
+                Dictionary<string, object> request = new Dictionary<string, object>();
+                request["application_id"] = onlineApplicationId;
+                request["application_token"] = onlineApplicationToken;
+                deviceKey = PublicField(OnlinePortalRequest("/v1/device-key", request), "auth_key");
+                if (!deviceKey.StartsWith("hskey-auth-", StringComparison.Ordinal))
+                    throw new InvalidDataException("服务器未返回有效的设备入网凭据。");
+            }
+            Dictionary<string, object> config = new Dictionary<string, object>();
+            config["control_url"] = control;
+            config["state_dir"] = identityDir;
+            config["hostname"] = "bbport-" + Environment.MachineName.ToLowerInvariant();
+            config["game_udp_port"] = 31316;
+            config["udp_bridge_port"] = 31416;
+            string serverIp = OverlayServerIp();
+            List<Dictionary<string, object>> tcp = new List<Dictionary<string, object>>();
+            List<Dictionary<string, object>> udp = new List<Dictionary<string, object>>();
+            if (serverIp.Length != 0) {
+                foreach (int port in new int[] { 31313, 31315, 18080 })
+                    tcp.Add(new Dictionary<string, object> { { "listen", "127.0.0.2:" + port },
+                        { "remote", serverIp + ":" + port } });
+                udp.Add(new Dictionary<string, object> { { "listen", "127.0.0.2:31314" },
+                    { "remote", serverIp + ":31314" } });
+            }
+            config["tcp_proxies"] = tcp;
+            config["udp_proxies"] = udp;
+            string configFile = Path.Combine(state, "client.json");
+            File.WriteAllText(configFile, JsonSerializer().Serialize(config), new UTF8Encoding(false));
+            string arguments = "--config \"" + configFile + "\"" +
+                (deviceKey.Length > 0 ? " --auth-key-stdin" : "");
+            ProcessStartInfo info = new ProcessStartInfo(executable, arguments) {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                RedirectStandardInput = deviceKey.Length > 0,
+                WorkingDirectory = Path.GetDirectoryName(executable)
+            };
+            embeddedNetIp = "";
+            lastEmbeddedAuthUrl = "";
+            Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
+            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args) {
+                if (args.Data != null) HandleEmbeddedNetEvent(args.Data, control);
+            };
+            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) {
+                if (args.Data != null) Log("内置私网诊断：" + args.Data);
+            };
+            process.Exited += delegate {
+                embeddedNetIp = "";
+                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate { RefreshTailscaleStatus(); });
+            };
+            process.Start();
+            if (deviceKey.Length > 0) {
+                process.StandardInput.WriteLine(deviceKey);
+                process.StandardInput.Close();
+                deviceKey = "";
+            }
+            embeddedNetProcess = process;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            onlineHeadscaleStatus.Text = "自建私网：正在自动验证设备。";
+            onlineHeadscaleStatus.ForeColor = Color.DarkOrange;
+        } catch (Exception e) {
+            onlineHeadscaleStatus.Text = "自建私网：连接准备失败（" + e.Message + "）";
+            onlineHeadscaleStatus.ForeColor = Color.Firebrick;
+            MessageBox.Show(this, "无法启动内置私网连接：" + e.Message,
+                "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    void HandleEmbeddedNetEvent(string line, string control) {
+        Dictionary<string, object> item;
+        try { item = JsonSerializer().DeserializeObject(line) as Dictionary<string, object>; }
+        catch { return; }
+        if (item == null) return;
+        string state = PublicField(item, "state");
+        string ip = PublicField(item, "ip");
+        string auth = PublicField(item, "auth_url");
+        string error = PublicField(item, "error");
+        if (state == "ready") {
+            IPAddress parsed;
+            if (IPAddress.TryParse(ip, out parsed) && parsed.AddressFamily == AddressFamily.InterNetwork) {
+                embeddedNetIp = ip;
+                try {
+                    string marker = Path.Combine(Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData), "BloodbornePC",
+                        "embedded-net", "enrolled-control.txt");
+                    File.WriteAllText(marker, control, new UTF8Encoding(false));
+                } catch (Exception e) { Log("无法保存私网入网状态：" + e.Message); }
+            }
+        }
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke((Action)delegate {
+            if (state == "auth" && auth != lastEmbeddedAuthUrl) {
+                Uri login, server;
+                if (Uri.TryCreate(auth, UriKind.Absolute, out login) &&
+                    Uri.TryCreate(control, UriKind.Absolute, out server) &&
+                    login.Scheme == server.Scheme && login.Authority == server.Authority) {
+                    lastEmbeddedAuthUrl = auth;
+                    if (MessageBox.Show(this, "设备需要重新验证。请检查在线账号或联系管理员；不要分享此地址。\r\n\r\n" + auth +
+                        "\r\n\r\n现在打开授权页面吗？", "内置私网设备授权",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                        Process.Start(new ProcessStartInfo(auth) { UseShellExecute = true });
+                }
+            } else if (state == "error") {
+                onlineTailscaleStatus.Text = "内置私网：连接失败（" + error + "）";
+                onlineTailscaleStatus.ForeColor = Color.Firebrick;
+            } else RefreshTailscaleStatus();
+        });
+    }
+
+    void RefreshTailscaleStatus() {
+        bool ready = EmbeddedNetReady();
+        onlineTailscaleStatus.Text = ready ? "内置私网：已连接，节点 " + embeddedNetIp :
+            embeddedNetProcess != null && !embeddedNetProcess.HasExited ? "内置私网：等待授权或分配地址" :
+            "内置私网：未连接";
+        onlineTailscaleStatus.ForeColor = ready ? Color.DarkGreen : Color.DarkOrange;
+    }
+
+    Dictionary<string, object> OnlinePortalRequest(string route, Dictionary<string, object> body) {
+        string portal = EffectivePublicPortalUrl();
         if (portal.Length == 0) throw new InvalidOperationException("公共在线服务尚未配置。");
         byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer().Serialize(body));
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(portal + route);
@@ -2036,8 +2201,8 @@ sealed class MainForm : Form {
                 if (!result.TryGetValue("ok", out ok) || !(ok is bool) || !(bool)ok)
                     throw new InvalidOperationException("服务端未完成注册，请检查联机 ID 是否已被占用。");
                 BeginInvoke((Action)delegate {
-                    onlineApplicationId = ""; onlineApplicationToken = ""; onlineRegistrationKey = "";
-                    onlineApplicationStatus.Text = "申请状态：注册成功！保存设置后即可启动在线联机。";
+                    onlineRegistrationKey = "";
+                    onlineApplicationStatus.Text = "申请状态：注册成功！设备入网将使用本机加密保存的申请凭据自动完成。";
                     onlineRegisterButton.Enabled = true;
                     try { PersistOnlineApplication(); }
                     catch (Exception e) { Warn("注册成功，但本地设置保存失败：" + e.Message); }
@@ -2223,7 +2388,9 @@ sealed class MainForm : Form {
         options.NativeLan = Value(coreMode) == "native_lan" || options.PublicOnline;
         options.LanHost = !options.PublicOnline && lanHost.Checked;
         options.LanSeamless = !options.PublicOnline && lanSeamless.Checked;
-        options.LanAddress = options.PublicOnline ? PublicServerAddress() : lanAddressBox.Text.Trim();
+        options.LanAddress = options.PublicOnline ?
+            (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
+            lanAddressBox.Text.Trim();
         options.LanNpid = options.PublicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim();
         options.LanPassword = options.PublicOnline ? onlinePasswordBox.Text : lanPasswordBox.Text;
         options.LanEmail = options.PublicOnline ? "" : lanEmailBox.Text.Trim();
@@ -2269,6 +2436,10 @@ sealed class MainForm : Form {
         options.Env["BB_SHADNET_NPID"] = validOnlineEndpoint ? options.LanNpid : "";
         options.Env["BB_SHADNET_PASSWORD"] = validOnlineEndpoint ? options.LanPassword : "";
         options.Env["BB_UPNP"] = validOnlineEndpoint ? "0" : "";
+        bool overlayGame = options.PublicOnline && OverlayServerIp().Length != 0 && EmbeddedNetReady();
+        options.Env["SHADPS4_P2P_PORT"] = overlayGame ? "31316" : "";
+        options.Env["BB_TSNET_BRIDGE_PORT"] = overlayGame ? "31416" : "";
+        options.Env["BB_TSNET_NODE_IP"] = overlayGame ? embeddedNetIp : "";
         options.Env["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] =
             validOnlineEndpoint && options.LanSeamless ? "1" : "";
         List<string> enabledCheats = new List<string>();
@@ -2314,6 +2485,9 @@ sealed class MainForm : Form {
             }
         }
         if (lanMode || nativeLan) {
+            if (publicOnline && OverlayServerIp().Length != 0 && !EmbeddedNetReady()) {
+                Warn("请先在“在线联机”页连接内置私网，待显示节点地址后再启动游戏。"); return false;
+            }
             if (!Regex.IsMatch(publicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
                 Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
             }
@@ -2321,12 +2495,14 @@ sealed class MainForm : Form {
         if (lanMode || nativeLan) {
             string host;
             int port;
-            string address = publicOnline ? PublicServerAddress() : lanAddressBox.Text;
+            string address = publicOnline ?
+                (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
+                lanAddressBox.Text;
             if (!TryParseLanEndpoint(address, out host, out port)) {
                 Warn(publicOnline ? "公共在线服务尚未配置，当前安装包暂不能使用在线联机。" :
                     "shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
             }
-            if (publicOnline && PublicPortalUrl().Length == 0) {
+            if (publicOnline && EffectivePublicPortalUrl().Length == 0) {
                 Warn("公共在线账号服务尚未配置，当前安装包暂不能使用在线联机。"); return false;
             }
             if ((publicOnline ? onlinePasswordBox.Text : lanPasswordBox.Text).Length == 0) { Warn("请输入联机账号密码。"); return false; }
@@ -3208,7 +3384,7 @@ sealed class MainForm : Form {
     }
     void OnClosing(object sender, FormClosingEventArgs e) {
         if (busy && launcherProcess != null &&
-            MessageBox.Show(this, "游戏核心仍在运行。关闭窗口不会强制结束游戏，确定关闭吗？", TitleText,
+            MessageBox.Show(this, "游戏核心仍在运行。关闭窗口不会强制结束游戏；若正在使用内置私网，联机连接会断开。确定关闭吗？", TitleText,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) {
             e.Cancel = true;
             return;
@@ -3221,6 +3397,9 @@ sealed class MainForm : Form {
                 e.Cancel = true;
                 return;
             }
+        }
+        if (embeddedNetProcess != null && !embeddedNetProcess.HasExited) {
+            try { embeddedNetProcess.Kill(); embeddedNetProcess.WaitForExit(2000); } catch { }
         }
     }
 }

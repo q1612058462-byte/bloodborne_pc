@@ -16,7 +16,8 @@ import sqlite3
 import struct
 import threading
 import time
-from urllib.request import urlopen
+from datetime import datetime, timedelta, timezone
+from urllib.request import Request, urlopen
 
 
 DATA = Path(os.environ.get("PORTAL_DATA", "/var/lib/portal"))
@@ -26,6 +27,10 @@ SHADNET_PORT = int(os.environ.get("SHADNET_PORT", "31313"))
 STATS_BASE = os.environ.get("STATS_BASE", "http://127.0.0.1:31320/stats")
 AUTO_APPROVE = os.environ.get("PORTAL_AUTO_APPROVE", "false").lower() == "true"
 POLL_SECONDS = max(5, int(os.environ.get("PORTAL_POLL_SECONDS", "20")))
+HEADSCALE_API_URL = os.environ.get("HEADSCALE_API_URL", "http://headscale:8080").rstrip("/")
+HEADSCALE_API_KEY_FILE = Path(os.environ.get("HEADSCALE_API_KEY_FILE", "/run/secrets/headscale_api_key"))
+HEADSCALE_USER_ID = os.environ.get("HEADSCALE_USER_ID", "")
+DEVICE_KEYS_PER_DAY = 5
 NPID = re.compile(r"[A-Za-z0-9_-]{3,16}\Z")
 QQ = re.compile(r"[1-9][0-9]{4,11}\Z")
 
@@ -92,6 +97,30 @@ def stats(path):
         return json.load(response)
 
 
+def create_headscale_preauth():
+    """Mint a short-lived, one-use device key; keep the admin key on the server."""
+    if not HEADSCALE_USER_ID.isdecimal() or not HEADSCALE_API_KEY_FILE.is_file():
+        raise RuntimeError("私网自动入网尚未配置，请联系管理员")
+    admin_key = HEADSCALE_API_KEY_FILE.read_text(encoding="ascii").strip()
+    if not admin_key:
+        raise RuntimeError("私网自动入网尚未配置，请联系管理员")
+    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
+    payload = json.dumps({"user": HEADSCALE_USER_ID, "reusable": False,
+                          "ephemeral": False, "expiration": expires.isoformat().replace("+00:00", "Z")}).encode()
+    request = Request(HEADSCALE_API_URL + "/api/v1/preauthkey", data=payload,
+                      headers={"Authorization": "Bearer " + admin_key,
+                               "Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=5) as response:
+            result = json.load(response)
+    except Exception as exc:
+        raise RuntimeError("私网入网凭据签发失败，请联系管理员") from exc
+    key = result.get("preAuthKey", {}).get("key", "")
+    if not isinstance(key, str) or not key.startswith("hskey-auth-"):
+        raise RuntimeError("私网入网凭据响应无效")
+    return key
+
+
 class Portal:
     def __init__(self, data=DATA):
         data.mkdir(parents=True, exist_ok=True)
@@ -117,6 +146,10 @@ class Portal:
                 npid TEXT NOT NULL, at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS login_events_at ON login_events(at);
+            CREATE TABLE IF NOT EXISTS device_key_issues (
+                application_id TEXT NOT NULL, issued_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS device_key_issues_recent ON device_key_issues(application_id,issued_at);
         """)
         self.db.commit()
         self.lock = threading.RLock()
@@ -165,7 +198,7 @@ class Portal:
             row = self.db.execute("SELECT * FROM applications WHERE id=?", (application_id,)).fetchone()
         if not row or not hmac.compare_digest(row["token_hash"], mac(self.secret, token)):
             raise PermissionError("申请凭据无效")
-        state = row["state"] if row["expires_at"] >= time.time() else "expired"
+        state = row["state"] if row["state"] == "registered" or row["expires_at"] >= time.time() else "expired"
         return {"state": state, "npid": row["npid"],
                 "registration_key": self.one_time_key(application_id, token)
                 if state == "approved" else None}
@@ -190,6 +223,26 @@ class Portal:
             self.db.execute("UPDATE applications SET state='registered' WHERE id=?", (application_id,))
             self.db.commit()
             return {"ok": True, "npid": row["npid"]}
+
+    def device_key(self, body):
+        application_id = str(body.get("application_id", ""))
+        token = str(body.get("application_token", ""))
+        now = int(time.time())
+        with self.lock:
+            row = self.db.execute("SELECT token_hash,state FROM applications WHERE id=?",
+                                  (application_id,)).fetchone()
+            if not row or not hmac.compare_digest(row["token_hash"], mac(self.secret, token)) or \
+                    row["state"] != "registered":
+                raise PermissionError("请先在启动器完成在线账号注册")
+            count = self.db.execute("SELECT COUNT(*) FROM device_key_issues WHERE application_id=? "
+                                    "AND issued_at>?", (application_id, now - 86400)).fetchone()[0]
+            if count >= DEVICE_KEYS_PER_DAY:
+                raise RuntimeError("今日设备入网次数已达上限，请 24 小时后再试")
+            key = create_headscale_preauth()
+            self.db.execute("INSERT INTO device_key_issues VALUES (?,?)", (application_id, now))
+            self.db.execute("DELETE FROM device_key_issues WHERE issued_at<?", (now - 30 * 86400,))
+            self.db.commit()
+        return {"auth_key": key, "expires_in_seconds": 600}
 
     def approve(self, application_id):
         with self.lock:
@@ -299,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                                                         str(body.get("application_token", ""))))
             elif self.path == "/v1/register":
                 self.reply(200, self.portal.register(self.body()))
+            elif self.path == "/v1/device-key":
+                self.reply(200, self.portal.device_key(self.body()))
             elif self.path.startswith("/v1/admin/approve/") and self.authorized():
                 self.reply(200, self.portal.approve(self.path.rsplit("/", 1)[-1]))
             else:

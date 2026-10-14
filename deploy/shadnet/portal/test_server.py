@@ -55,6 +55,49 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn(b"123456789", raw)
         self.assertEqual(self.portal.db.execute("SELECT qq_last4 FROM applications").fetchone()[0], "6789")
 
+    def test_device_key_requires_registered_account_and_limits_issuance(self):
+        with patch.object(server, "AUTO_APPROVE", True):
+            applied = self.application()
+        request = {"application_id": applied["application_id"],
+                   "application_token": applied["application_token"]}
+        with patch.object(server, "create_headscale_preauth", return_value="hskey-auth-test") as mint:
+            with self.assertRaises(PermissionError):
+                self.portal.device_key(request)
+            self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
+                                   (applied["application_id"],))
+            self.portal.db.commit()
+            self.portal.db.execute("UPDATE applications SET expires_at=0 WHERE id=?",
+                                   (applied["application_id"],))
+            self.portal.db.commit()
+            self.assertEqual(self.portal.application(applied["application_id"],
+                                                     applied["application_token"])["state"], "registered")
+            with self.assertRaises(PermissionError):
+                self.portal.device_key({"application_id": applied["application_id"],
+                                        "application_token": "wrong"})
+            for _ in range(server.DEVICE_KEYS_PER_DAY):
+                self.assertEqual(self.portal.device_key(request)["auth_key"], "hskey-auth-test")
+            with self.assertRaises(RuntimeError):
+                self.portal.device_key(request)
+            self.assertEqual(mint.call_count, server.DEVICE_KEYS_PER_DAY)
+
+    def test_headscale_request_is_one_use_and_short_lived(self):
+        secret = Path(self.temp.name) / "api-key"
+        secret.write_text("hskey-api-secret")
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return b'{"preAuthKey":{"key":"hskey-auth-once"}}'
+        with patch.object(server, "HEADSCALE_API_KEY_FILE", secret), patch.object(
+                server, "HEADSCALE_USER_ID", "1"), patch.object(server, "urlopen", return_value=Response()) as urlopen:
+            self.assertEqual(server.create_headscale_preauth(), "hskey-auth-once")
+            request = urlopen.call_args.args[0]
+            payload = json.loads(request.data)
+            self.assertEqual(request.get_header("Authorization"), "Bearer hskey-api-secret")
+            self.assertFalse(payload["reusable"])
+            self.assertFalse(payload["ephemeral"])
+            self.assertEqual(payload["user"], "1")
+            self.assertIn("expiration", payload)
+
     def test_status_requires_registration_and_consent(self):
         with patch.object(server, "AUTO_APPROVE", True):
             visible = self.application()

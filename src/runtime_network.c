@@ -113,6 +113,11 @@ static LanEpoll epolls[EPOLL_SLOTS];
 static int32_t network_errno;
 static uint16_t next_vport=30000;
 static int network_initialized;
+/* Optional local tsnet sidecar. BBTS + peer IPv4 (network order) + port (network
+ * order) + the original four-byte-vport P2P datagram. Never enabled by default. */
+#define TSNET_BRIDGE_HEADER 10
+static uint16_t tsnet_bridge_port;
+static uint32_t tsnet_node_ip;
 
 static int lan_enabled(void) {
     const char *mode=getenv("BB_NETWORK_MODE");
@@ -209,6 +214,17 @@ static ABI int32_t net_init(void) {
     WSADATA data;
     if (WSAStartup(MAKEWORD(2,2),&data)) return fail_native();
 #endif
+    const char *bridge=getenv("BB_TSNET_BRIDGE_PORT");
+    if (bridge&&*bridge) {
+        char *end=NULL; long port=strtol(bridge,&end,10);
+        const char *node=getenv("BB_TSNET_NODE_IP");
+        struct in_addr parsed={0};
+        if (end==bridge||*end||port<1||port>65535||!node||
+            inet_pton(AF_INET,node,&parsed)!=1||parsed.s_addr==0)
+            return fail_guest(ORBIS_NET_EINVAL);
+        tsnet_bridge_port=(uint16_t)port;
+        tsnet_node_ip=parsed.s_addr;
+    }
     network_initialized=1;
     puts("Runtime: native LAN transport enabled (room matching/signaling still in development)");
     return 0;
@@ -285,17 +301,25 @@ static ABI int32_t net_accept(int id,OrbisSockaddrIn *address,uint32_t *size) {
 
 static int p2p_send(LanSocket *s,const void *data,uint64_t length,int flags,const OrbisSockaddrIn *to,uint32_t size) {
     (void)flags;
-    if (length>65503) return fail_guest(40);
+    if (length>65503-(tsnet_bridge_port?TSNET_BRIDGE_HEADER:0)) return fail_guest(40);
     if (p2p_ensure_bound(s,0)) return -1;
     const OrbisSockaddrIn *target=to;
     if (!target) { if (!s->connected) return fail_guest(ORBIS_NET_ENOTCONN); target=&s->peer; }
     if (size && size<sizeof(*target)) return fail_guest(ORBIS_NET_EINVAL);
     struct sockaddr_in native; if (to_native_addr(target,sizeof(*target),&native)) return -1;
-    unsigned char *packet=malloc((size_t)length+4); if (!packet) return fail_guest(ORBIS_NET_ENOBUFS);
-    memcpy(packet,&s->p2p_vport,2); memcpy(packet+2,&target->vport,2);
-    if (length) memcpy(packet+4,data,(size_t)length);
-    int sent=(int)sendto(s->native,(const char *)packet,(int)length+4,0,(struct sockaddr *)&native,sizeof(native));
-    free(packet); if (sent<0) return fail_native(); return sent-4;
+    size_t offset=tsnet_bridge_port?TSNET_BRIDGE_HEADER:0;
+    unsigned char *packet=malloc((size_t)length+4+offset); if (!packet) return fail_guest(ORBIS_NET_ENOBUFS);
+    if (offset) {
+        memcpy(packet,"BBTS",4);
+        memcpy(packet+4,&native.sin_addr.s_addr,4);
+        memcpy(packet+8,&native.sin_port,2);
+        native.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+        native.sin_port=htons(tsnet_bridge_port);
+    }
+    memcpy(packet+offset,&s->p2p_vport,2); memcpy(packet+offset+2,&target->vport,2);
+    if (length) memcpy(packet+offset+4,data,(size_t)length);
+    int sent=(int)sendto(s->native,(const char *)packet,(int)length+4+(int)offset,0,(struct sockaddr *)&native,sizeof(native));
+    free(packet); if (sent<0) return fail_native(); return sent-4-(int)offset;
 }
 
 static ABI int32_t net_sendto(int id,const void *data,uint64_t length,int flags,const OrbisSockaddrIn *to,uint32_t size) {
@@ -316,15 +340,28 @@ static ABI int32_t net_send(int id,const void *data,uint64_t length,int flags) {
 
 static int p2p_recv(LanSocket *s,void *data,uint64_t length,int flags,OrbisSockaddrIn *from,uint32_t *size) {
     if (p2p_ensure_bound(s,0)) return -1;
-    unsigned char *packet=malloc((size_t)length+4); if (!packet) return fail_guest(ORBIS_NET_ENOBUFS);
+    if (length>65503) return fail_guest(ORBIS_NET_EINVAL);
+    size_t offset=tsnet_bridge_port?TSNET_BRIDGE_HEADER:0;
+    unsigned char *packet=malloc((size_t)length+4+offset); if (!packet) return fail_guest(ORBIS_NET_ENOBUFS);
     struct sockaddr_in native; socklen_t native_size=sizeof(native);
-    int received=(int)recvfrom(s->native,(char *)packet,(int)length+4,native_flags(flags),(struct sockaddr *)&native,&native_size);
+    int received=(int)recvfrom(s->native,(char *)packet,(int)length+4+(int)offset,native_flags(flags),(struct sockaddr *)&native,&native_size);
     if (received<0) { free(packet); return fail_native(); }
-    if (received<4) { free(packet); return fail_guest(ORBIS_NET_EINVAL); }
-    uint16_t source_vport,dest_vport; memcpy(&source_vport,packet,2); memcpy(&dest_vport,packet+2,2);
+    if (offset) {
+        if (native.sin_addr.s_addr!=htonl(INADDR_LOOPBACK)||native.sin_port!=htons(tsnet_bridge_port)||
+            received<TSNET_BRIDGE_HEADER||memcmp(packet,"BBTS",4)) {
+            free(packet); return fail_guest(ORBIS_NET_EWOULDBLOCK);
+        }
+        memcpy(&native.sin_addr.s_addr,packet+4,4);
+        memcpy(&native.sin_port,packet+8,2);
+        if (!native.sin_addr.s_addr||!native.sin_port) {
+            free(packet); return fail_guest(ORBIS_NET_EWOULDBLOCK);
+        }
+    }
+    if (received<(int)(4+offset)) { free(packet); return fail_guest(ORBIS_NET_EINVAL); }
+    uint16_t source_vport,dest_vport; memcpy(&source_vport,packet+offset,2); memcpy(&dest_vport,packet+offset+2,2);
     if (dest_vport!=s->p2p_vport && dest_vport!=0xffff) { free(packet); return fail_guest(ORBIS_NET_EWOULDBLOCK); }
-    int payload=received-4; if (payload>(int)length) payload=(int)length;
-    if (payload) memcpy(data,packet+4,(size_t)payload); free(packet);
+    int payload=received-4-(int)offset; if (payload>(int)length) payload=(int)length;
+    if (payload) memcpy(data,packet+offset+4,(size_t)payload); free(packet);
     if (from && size && *size>=sizeof(*from)) { from_native_addr(&native,source_vport,from); *size=sizeof(*from); }
     return payload;
 }
@@ -467,7 +504,10 @@ static ABI int32_t netctl_state(int32_t *state) { if(!state)return ORBIS_NET_CTL
 static ABI int32_t netctl_info(int code,void *info) {
     if(!info)return ORBIS_NET_CTL_INVALID_ADDR; memset(info,0,256);
     if(code==1||code==3||code==4||code==11)*(uint32_t *)info=code==3?1500:1;
-    else if(code>=14&&code<=18)strcpy((char *)info,code==14?"127.0.0.1":code==15?"255.0.0.0":code==16?"0.0.0.0":"1.1.1.1");
+    else if(code==14&&tsnet_bridge_port) {
+        struct in_addr ip={0}; ip.s_addr=tsnet_node_ip;
+        inet_ntop(AF_INET,&ip,(char *)info,256);
+    } else if(code>=14&&code<=18)strcpy((char *)info,code==14?"127.0.0.1":code==15?"255.0.0.0":code==16?"0.0.0.0":"1.1.1.1");
     return 0;
 }
 static ABI int32_t netctl_nat(uint32_t *info) { if(!info)return ORBIS_NET_CTL_INVALID_ADDR;info[1]=1;info[2]=2;info[3]=0;return 0; }

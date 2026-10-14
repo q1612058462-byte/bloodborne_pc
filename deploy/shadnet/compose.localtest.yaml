@@ -11,6 +11,9 @@ services:
       - "127.0.0.1:31314:31314/udp"
       - "127.0.0.1:31315:31315/tcp"
       - "127.0.0.1:18080:18080/tcp"
+    networks:
+      - default
+      - bbport-control
     volumes:
       - shadnet-data:/var/lib/shadnet
     healthcheck:
@@ -28,6 +31,9 @@ services:
     restart: unless-stopped
     environment:
       PORTAL_AUTO_APPROVE: "true"
+      HEADSCALE_API_URL: "http://headscale:8080"
+      HEADSCALE_API_KEY_FILE: "/var/lib/portal/headscale_api_key"
+      HEADSCALE_USER_ID: "${HEADSCALE_USER_ID:-1}"
     volumes:
       - shadnet-data:/run/shadnet:ro
       - portal-data:/var/lib/portal
@@ -36,3 +42,8 @@ services:
 volumes:
   shadnet-data:
   portal-data:
+networks:
+  default:
+  bbport-control:
+    name: bbport-headscale-control
+    external: true

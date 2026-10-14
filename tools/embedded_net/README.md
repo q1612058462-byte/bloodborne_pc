@@ -1,0 +1,47 @@
+# bbport 内置私网桥接（实验）
+
+`bbport-net.exe` 是单独的 userspace `tsnet` 节点，不安装系统级 Tailscale。
+`Build.ps1` 用 Go 1.27.1 或本机 Docker 编译 Windows x64 程序；中文启动器把
+它装到运行环境的 `net/` 目录。设备身份存放在配置指定的 `state_dir`，**不可
+把该目录、设备授权 URL 或任何预授权密钥放进发行包**。
+
+配置文件是 JSON，`--config <绝对路径>` 启动。首次自动入网时，启动器追加
+`--auth-key-stdin`，通过标准输入传入短时一次性密钥；密钥不写配置、命令行或
+日志。必要字段：`control_url`
+（正式环境必须 HTTPS，本机回环地址可用 HTTP）、绝对路径 `state_dir`、
+`hostname`。程序在 stdout 输出 JSON 状态事件：`connecting`、`auth`、
+`ready`、`error`。`ready` 包含该节点的 `100.64.0.0/10` 地址。
+
+客户端由中文启动器自动生成配置。服务端的本机 Docker 测试配置示例（将
+`state_dir` 改为自己机器的绝对路径，不与客户端共用）：
+
+```json
+{
+  "control_url": "http://127.0.0.1:18081",
+  "state_dir": "D:\\bbport-private-test\\server-identity",
+  "hostname": "bbport-server",
+  "tcp_publishes": [
+    { "tailnet_port": 31313, "local": "127.0.0.1:31313" },
+    { "tailnet_port": 31315, "local": "127.0.0.1:31315" },
+    { "tailnet_port": 18080, "local": "127.0.0.1:18080" }
+  ],
+  "udp_publishes": [
+    { "tailnet_port": 31314, "local": "127.0.0.1:31314" }
+  ]
+}
+```
+
+此配置只监听尾网地址，不替代 Headscale 容器或 shadNet 容器。两台玩家的启动器
+仍各自运行独立客户端节点；服务端节点的尾网 IPv4 写入测试包的
+`ONLINE_SERVICE.txt` 的 `overlay_server=`，**不要把本机测试节点地址直接
+写进公开发行包**。当前 `control=127.0.0.1` 也仅适合同机测试。
+
+客户端 P2P 使用固定物理 UDP `31316`，本地桥接端口 `31416`。桥接内部帧为
+`BBTS`、4 字节 IPv4、2 字节网络序端口、原始游戏 UDP 帧；该内部帧只允许
+在回环接口传输，尾网侧只传原始游戏帧。需要两个方向都能通；服务器健康与
+Headscale 节点 `ready` 并不能证明 Bloodborne 召唤成功。
+
+本机已验证两个独立节点的 TCP 门户/WebAPI 请求和双向 UDP 人工数据包。
+真实双机游戏测试、长期运行、NAT/DERP 切换、访问策略与第三方依赖许可清单
+仍需在公开发布前复核。当前 Headscale 测试配置使用公共 DERP 地图，因此它
+还不是完全自托管的中继网络。

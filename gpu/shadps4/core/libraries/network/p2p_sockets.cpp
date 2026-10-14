@@ -35,6 +35,9 @@ constexpr u16 kSignalingVPortNbo = 0xffff;
 constexpr size_t kVPortHeaderSize = 4;
 constexpr size_t kMaxUdpPayload = 65507;
 constexpr size_t kMaxP2PPayload = kMaxUdpPayload - kVPortHeaderSize;
+// Local tsnet sidecar framing: magic, remote IPv4, remote UDP port, PS4 P2P frame.
+constexpr size_t kTsnetBridgeHeaderSize = 10;
+constexpr char kTsnetBridgeMagic[] = "BBTS";
 
 #ifdef _WIN32
 constexpr net_socket kInvalidSocket = INVALID_SOCKET;
@@ -190,6 +193,25 @@ public:
             requested_port = static_cast<u16>(parsed);
         }
 
+        if (const char* env = std::getenv("BB_TSNET_BRIDGE_PORT"); env != nullptr && *env != '\0') {
+            char* end = nullptr;
+            const long parsed = std::strtol(env, &end, 10);
+            if (end == env || *end != '\0' || parsed < 1 || parsed > 65535) {
+                LOG_ERROR(Lib_Net, "Invalid BB_TSNET_BRIDGE_PORT='{}'", env);
+                CloseSocket(host_socket);
+                return false;
+            }
+            const char* node_ip = std::getenv("BB_TSNET_NODE_IP");
+            in_addr parsed_ip{};
+            if (node_ip == nullptr || ::inet_pton(AF_INET, node_ip, &parsed_ip) != 1 ||
+                parsed_ip.s_addr == 0) {
+                LOG_ERROR(Lib_Net, "BB_TSNET_NODE_IP must be a valid IPv4 address in bridge mode");
+                CloseSocket(host_socket);
+                return false;
+            }
+            bridge_port = static_cast<u16>(parsed);
+        }
+
         sockaddr_in bind_addr{};
         bind_addr.sin_family = AF_INET;
         bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -214,9 +236,8 @@ public:
         running.store(true, std::memory_order_release);
         receive_thread = std::thread(&P2PTransport::ReceiveMain, this);
 
-        LOG_INFO(Lib_Net,
-                 "P2P transport ready: UDP physical_port={} (set SHADPS4_P2P_PORT to pin it)",
-                 physical_port);
+        LOG_INFO(Lib_Net, "P2P transport ready: UDP physical_port={} tsnet_bridge_port={}",
+                 physical_port, bridge_port);
         return true;
 #endif
     }
@@ -234,6 +255,7 @@ public:
 
         CloseSocket(host_socket);
         physical_port = 0;
+        bridge_port = 0;
 #endif
     }
 
@@ -292,7 +314,8 @@ public:
         return -1;
 #else
         if (!Start() || !IsValidSocket(host_socket) || (data == nullptr && len != 0) ||
-            len > kMaxP2PPayload || dest_addr_nbo == 0 || dest_port_nbo == 0) {
+            len > kMaxP2PPayload - (bridge_port != 0 ? kTsnetBridgeHeaderSize : 0) ||
+            dest_addr_nbo == 0 || dest_port_nbo == 0) {
             return -1;
         }
 
@@ -304,10 +327,19 @@ public:
             std::memcpy(framed.data() + kVPortHeaderSize, data, len);
         }
 
+        if (bridge_port != 0) {
+            std::vector<u8> bridged(kTsnetBridgeHeaderSize + framed.size());
+            std::memcpy(bridged.data(), kTsnetBridgeMagic, 4);
+            std::memcpy(bridged.data() + 4, &dest_addr_nbo, sizeof(dest_addr_nbo));
+            std::memcpy(bridged.data() + 8, &dest_port_nbo, sizeof(dest_port_nbo));
+            std::memcpy(bridged.data() + kTsnetBridgeHeaderSize, framed.data(), framed.size());
+            framed.swap(bridged);
+        }
+
         sockaddr_in dest{};
         dest.sin_family = AF_INET;
-        dest.sin_addr.s_addr = dest_addr_nbo;
-        dest.sin_port = dest_port_nbo;
+        dest.sin_addr.s_addr = bridge_port != 0 ? htonl(INADDR_LOOPBACK) : dest_addr_nbo;
+        dest.sin_port = bridge_port != 0 ? htons(bridge_port) : dest_port_nbo;
 
         const auto rc = ::sendto(host_socket, reinterpret_cast<const char*>(framed.data()),
                                  static_cast<int>(framed.size()), 0,
@@ -419,19 +451,36 @@ private:
                 continue;
             }
 
-            if (rc < static_cast<decltype(rc)>(kVPortHeaderSize)) {
+            size_t frame_offset = 0;
+            if (bridge_port != 0) {
+                // Do not accept direct-LAN traffic or forged source metadata in bridge mode.
+                if (from.sin_addr.s_addr != htonl(INADDR_LOOPBACK) ||
+                    from.sin_port != htons(bridge_port) ||
+                    rc < static_cast<decltype(rc)>(kTsnetBridgeHeaderSize) ||
+                    std::memcmp(buffer.data(), kTsnetBridgeMagic, 4) != 0) {
+                    continue;
+                }
+                std::memcpy(&from.sin_addr.s_addr, buffer.data() + 4, sizeof(from.sin_addr.s_addr));
+                std::memcpy(&from.sin_port, buffer.data() + 8, sizeof(from.sin_port));
+                if (from.sin_addr.s_addr == 0 || from.sin_port == 0) {
+                    continue;
+                }
+                frame_offset = kTsnetBridgeHeaderSize;
+            }
+
+            if (static_cast<size_t>(rc) < frame_offset + kVPortHeaderSize) {
                 LOG_DEBUG(Lib_Net, "P2P dropping too-short UDP frame size={}", rc);
                 continue;
             }
 
             u16 source_vport_nbo = 0;
             u16 dest_vport_nbo = 0;
-            std::memcpy(&source_vport_nbo, buffer.data(), sizeof(source_vport_nbo));
-            std::memcpy(&dest_vport_nbo, buffer.data() + sizeof(source_vport_nbo),
+            std::memcpy(&source_vport_nbo, buffer.data() + frame_offset, sizeof(source_vport_nbo));
+            std::memcpy(&dest_vport_nbo, buffer.data() + frame_offset + sizeof(source_vport_nbo),
                         sizeof(dest_vport_nbo));
 
-            const u8* payload = buffer.data() + kVPortHeaderSize;
-            const size_t payload_size = static_cast<size_t>(rc) - kVPortHeaderSize;
+            const u8* payload = buffer.data() + frame_offset + kVPortHeaderSize;
+            const size_t payload_size = static_cast<size_t>(rc) - frame_offset - kVPortHeaderSize;
 
             if (dest_vport_nbo == kSignalingVPortNbo) {
                 PushInternal(ClassifyInternal(payload, payload_size), from.sin_addr.s_addr,
@@ -462,6 +511,7 @@ private:
 
     net_socket host_socket{kInvalidSocket};
     u16 physical_port{0};
+    u16 bridge_port{0};
 
     std::mutex registry_mutex;
     std::unordered_map<u16, P2PSocket*> game_sockets;
@@ -954,6 +1004,14 @@ u16 GetP2PConfiguredPort() {
 }
 
 u32 GetP2PAdvertisedAddr() {
+    if (const char* bridge = std::getenv("BB_TSNET_BRIDGE_PORT"); bridge != nullptr && *bridge != '\0') {
+        if (const char* node_ip = std::getenv("BB_TSNET_NODE_IP"); node_ip != nullptr) {
+            in_addr parsed{};
+            if (::inet_pton(AF_INET, node_ip, &parsed) == 1) {
+                return parsed.s_addr;
+            }
+        }
+    }
     auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
     return netinfo->GetExternalIp();
 }

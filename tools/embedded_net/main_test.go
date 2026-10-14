@@ -1,0 +1,52 @@
+package main
+
+import (
+	"net/netip"
+	"testing"
+)
+
+func TestBridgeFrameRoundTrip(t *testing.T) {
+	ip := netip.MustParseAddr("100.64.1.12")
+	frame, err := bridgeFrame(ip, 31316, []byte{0, 1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, payload, err := parseBridgeFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer.Addr() != ip || peer.Port() != 31316 || string(payload) != string([]byte{0, 1, 2, 3}) {
+		t.Fatalf("unexpected round-trip: %v %v", peer, payload)
+	}
+}
+
+func TestBridgeRejectsOutsideTailnet(t *testing.T) {
+	frame, err := bridgeFrame(netip.MustParseAddr("192.168.31.7"), 31316, []byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := parseBridgeFrame(frame); err == nil {
+		t.Fatal("accepted non-tailnet peer")
+	}
+	frame[0] = 0
+	if _, _, err := parseBridgeFrame(frame); err == nil {
+		t.Fatal("accepted bad magic")
+	}
+}
+
+func TestConfigRequiresLocalBindingsAndSafeControlURL(t *testing.T) {
+	c := config{ControlURL: "http://127.0.0.1:18081", StateDir: t.TempDir(), Hostname: "hunter",
+		TCPProxies: []endpoint{{Listen: "127.0.0.2:31313", Remote: "100.64.0.1:31313"}}}
+	if err := c.validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.ControlURL = "http://example.com"
+	if err := c.validate(); err == nil {
+		t.Fatal("accepted remote plaintext control URL")
+	}
+	c.ControlURL = "https://headscale.example.com"
+	c.TCPProxies[0].Listen = "0.0.0.0:31313"
+	if err := c.validate(); err == nil {
+		t.Fatal("accepted public local listener")
+	}
+}

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "common/alignment.h"
@@ -12,6 +13,7 @@
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/network/net.h"
 #include "core/libraries/network/net_util.h"
+#include "core/libraries/network/sockets.h"
 #include "core/libraries/np/np_common.h"
 #include "core/libraries/np/np_error.h"
 #include "core/libraries/np/np_signaling/np_signaling_helpers.h"
@@ -215,14 +217,22 @@ static void HandleStunEcho(s32 ctx_id, const StunEcho& echo) {
         return;
     }
     NpSignalingContext& ctx = it->second;
-    ctx.ext_addr.store(echo.ext_ip);
-    ctx.ext_port.store(echo.ext_port);
+    // The local tsnet proxy changes the address seen by the broker's STUN
+    // endpoint. Peers must instead dial this node's tailnet IP and pinned
+    // game P2P UDP port. Keep the ordinary STUN result outside bridge mode.
+    const char* bridge = std::getenv("BB_TSNET_BRIDGE_PORT");
+    const bool bridged = bridge != nullptr && *bridge != '\0';
+    const u32 ext_ip = bridged ? Libraries::Net::GetP2PAdvertisedAddr() : echo.ext_ip;
+    const u16 physical_port = Libraries::Net::GetP2PConfiguredPort();
+    const u16 ext_port = bridged ? htons(physical_port != 0 ? physical_port : 31316) : echo.ext_port;
+    ctx.ext_addr.store(ext_ip);
+    ctx.ext_port.store(ext_port);
 
     LOG_DEBUG(Lib_NpSignaling, "STUN echo: ctxId={} ext_addr={:#x} ext_port={}", ctx_id,
-              echo.ext_ip, sceNetNtohs(echo.ext_port));
+              ext_ip, sceNetNtohs(ext_port));
 
     auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-    netinfo->SetExternalIp(echo.ext_ip);
+    netinfo->SetExternalIp(ext_ip);
 
     ctx.stun_cv.notify_all();
 }

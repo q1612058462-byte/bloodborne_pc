@@ -1,4 +1,4 @@
-# 在线联机本地测试（v1.7.1）
+# 在线联机本地测试（v1.7.5）
 
 这套服务与现有局域网容器隔离：`compose.localtest.yaml` 使用独立的 Compose
 项目、账号数据库和注册密钥，只监听本机 `127.0.0.1`。不会迁移或覆盖旧的
@@ -36,13 +36,39 @@ $registration.ok
 频率是估算值，不是游戏时长或每次操作的精确计数。管理员请做好数据库备份和
 访问控制。
 
-当前 v1.7.2 测试包的 `packaging/ONLINE_SERVICE.txt` 填的是
+当前本机测试包的 `packaging/ONLINE_SERVICE.txt` 填的是
 `server=127.0.0.1:31313` 与 `portal=http://127.0.0.1:18080`，**只能连接同一台
 电脑上的本地 Docker 栈**。另一台电脑用同一包时，`127.0.0.1` 指向它自己，
-不会连接这台开服电脑。要做双机测试，应制作单独的**私有测试包**，填入同一个
-tailnet 内可达的 shadNet 地址与门户 URL，然后重新构建启动器。客户端可通过网络
-流量获知服务器地址；“界面隐藏地址”不能防止攻击，安全边界是 Tailscale
-访问控制、服务端限流以及不开放公网端口。
+不会连接这台开服电脑。要做双机测试，应制作单独的**私有测试包**，在
+`ONLINE_SERVICE.txt` 的 `control=` 中填自建 Headscale HTTPS 地址，在
+`overlay_server=` 中填服务端内置节点的 `100.64.0.0/10` 地址，再重新构建启动器。
+客户端可通过网络流量获知服务器地址；“界面隐藏地址”不能防止攻击，安全边界是
+私网访问控制、服务端限流以及不开放公网端口。
+
+## 内置 userspace 私网实验
+
+`tools/embedded_net` 使用 `tailscale.com/tsnet`，随中文启动器分发独立的
+`net/bbport-net.exe`。它不安装官方 Tailscale 客户端、系统服务或虚拟网卡，也不
+切换电脑已有尾网。设备身份仅保存在当前用户的
+`%LOCALAPPDATA%\BloodbornePC\embedded-net\identity`；本地 Docker 中先执行
+`deploy/headscale/Initialize-AutoEnrollment.ps1` 完成一次性的服务端配置。
+新注册的在线账号首次连接时，门户按本机加密保存的申请凭据自动签发 10 分钟、
+单次使用的设备密钥，内置节点通过标准输入使用，不再逐台手动批准。
+旧版注册时已清除申请凭据的账号不能自动领钥，但已授权私网身份仍可复用；
+不应删除旧身份目录或游戏存档。构建发行包前先运行
+`tools/embedded_net/Build.ps1`，然后运行根目录 `setup.bat --build-only`。
+
+私网流量包括到服务端的 TCP 31313、31315、18080 和 UDP 31314，以及玩家间
+固定 UDP 31316。启动器只在 `overlay_server` 配置有效、内置节点已分配地址时
+通过本机 `127.0.0.2` 代理游戏与门户流量；未启用时保留旧路径。服务端可以
+在受控主机上用同一个 `bbport-net` 可执行文件配置 `tcp_publishes` 和
+`udp_publishes`，将 tailnet 端口转给本机 Docker 映射端口。不要把同一份
+`state_dir` 同时给两个节点，也不要把身份目录或授权链接打进玩家包。
+
+本机已验证：Go 单元测试、Windows 编译、账号注册到 Headscale 自动入网；
+两个独立节点间的 TCP 门户/WebAPI 请求，以及双向 UDP 桥接的人工数据包。
+仍须在两台真实玩家机器上验证游戏内双向匹配、召唤和持续的数据传输。因此
+这一入口目前标为实验性，不能把节点显示“已连接”当作游戏联机成功。
 
 ## Tailscale 测试栈
 

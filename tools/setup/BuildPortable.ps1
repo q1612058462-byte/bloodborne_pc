@@ -81,6 +81,9 @@ Get-ChildItem -LiteralPath (Join-Path $rootPath 'scripts') -Filter '*.py' -File 
 }
 Copy-RequiredTree (Join-Path $rootPath 'patches') (Join-Path $stage 'patches')
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'LICENSE-bbport.txt')
+Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\bbport-net.exe') (Join-Path $stage 'net\bbport-net.exe')
+Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\NOTICE.txt') (Join-Path $stage 'licenses\embedded-net-NOTICE.txt')
+Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\TAILSCALE_LICENSE.txt') (Join-Path $stage 'licenses\tailscale-BSD-3-Clause.txt')
 
 # Licenses for the complete shadp2p/shadNet stack and its dynamically loaded
 # Windows dependencies.  The MSYS2 prefix is discovered rather than assumed so
@@ -154,6 +157,7 @@ $buildInfo = @(
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
     'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
     'Local feature: native bbport online play using the complete shadp2p network, NP, WebAPI, Matching2 and signaling stack'
+    'Local feature: bundled userspace tsnet helper for isolated self-hosted Headscale connectivity (experimental)'
     'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'
     'Local feature: pre-launch game integrity checks and optional Old Hunters entitlement folder'
     ('bb-probe SHA256: ' + $probeHash)

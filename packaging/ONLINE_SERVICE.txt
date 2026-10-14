@@ -3,3 +3,9 @@
 # Never put a registration secret in this file or in the launcher.
 server=127.0.0.1:31313
 portal=http://127.0.0.1:18080
+# Local-only Headscale control plane; never include auth or admin keys.
+control=http://127.0.0.1:18081
+# Private two-machine test only: set overlay_server to the approved server
+# node's Headscale 100.64.0.0/10 address, then rebuild the launcher. Leave it
+# unset for this single-machine Docker package; do not publish test identities.
+# overlay_server=100.64.x.y
