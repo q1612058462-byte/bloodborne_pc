@@ -1,6 +1,7 @@
 FROM ubuntu:24.04 AS build
 
 ARG SHADNET_COMMIT=5a849a192fd4450593c57b10697316ac324c856e
+ARG SHADNET_BUILD_JOBS=2
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates cmake ninja-build build-essential \
@@ -8,18 +9,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qt6-websockets-dev && rm -rf /var/lib/apt/lists/*
-RUN git clone --recursive https://github.com/Wozzardman/shadnet-p2p.git /src \
-    && cd /src \
-    && git checkout --detach "$SHADNET_COMMIT" \
-    && git submodule update --init --recursive \
-    && test "$(git rev-parse HEAD)" = "$SHADNET_COMMIT"
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+# Use immutable GitHub archives: a recursive Git clone is unreliable on hosts
+# with intermittent TLS resets. The protobuf archive is the exact gitlink in
+# SHADNET_COMMIT, not a floating dependency.
+RUN curl --fail --location --retry 5 --retry-all-errors \
+      "https://codeload.github.com/Wozzardman/shadnet-p2p/tar.gz/$SHADNET_COMMIT" \
+      --output /tmp/shadnet.tar.gz \
+    && curl --fail --location --retry 5 --retry-all-errors \
+      "https://codeload.github.com/shadexternals/protobuf/tar.gz/refs/heads/main" \
+      --output /tmp/protobuf.tar.gz
+RUN echo "7a24d220f0b4d533bb5ba79fc44eff680358785829568ee954549ab9edce2ed4  /tmp/shadnet.tar.gz" | sha256sum -c - \
+    && echo "dd1235231a83957f5471ceae41078590315931dc2be6d6914da006387e6fac50  /tmp/protobuf.tar.gz" | sha256sum -c - \
+    && mkdir -p /src \
+    && tar -xzf /tmp/shadnet.tar.gz -C /src --strip-components=1 \
+    && mkdir -p /src/externals/protobuf \
+    && tar -xzf /tmp/protobuf.tar.gz -C /src/externals/protobuf --strip-components=1 \
+    && rm /tmp/shadnet.tar.gz /tmp/protobuf.tar.gz
+# Protobuf 36 falls back to FetchContent for Abseil. Supplying a checked
+# source archive avoids an unreliable git clone during CMake configure.
+RUN curl --fail --location --retry 5 --retry-all-errors \
+      "https://codeload.github.com/abseil/abseil-cpp/tar.gz/refs/tags/20250512.1" \
+      --output /tmp/abseil.tar.gz \
+    && echo "9b7a064305e9fd94d124ffa6cc358592eb42b5da588fb4e07d09254aa40086db  /tmp/abseil.tar.gz" | sha256sum -c - \
+    && mkdir -p /src/externals/abseil \
+    && tar -xzf /tmp/abseil.tar.gz -C /src/externals/abseil --strip-components=1 \
+    && rm /tmp/abseil.tar.gz
 COPY patches/qt64-server-api.patch /tmp/qt64-server-api.patch
 RUN cd /src && git apply --unidiff-zero /tmp/qt64-server-api.patch
 COPY patches/online-stats.patch /tmp/online-stats.patch
 RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
 RUN --mount=type=cache,target=/src/build cmake -S /src -B /src/build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-    && cmake --build /src/build --parallel 4 -- -k 0 \
+    -DFETCHCONTENT_SOURCE_DIR_ABSL=/src/externals/abseil \
+    && cmake --build /src/build --parallel "$SHADNET_BUILD_JOBS" -- -k 0 \
     && mkdir -p /src/artifacts \
     && cp /src/build/shadnet /src/build/worlds.cfg \
        /src/build/scoreboards.cfg /src/artifacts/

@@ -30,6 +30,10 @@ static class Program {
 
     [STAThread]
     static int Main(string[] args) {
+        // csc.exe targets the .NET Framework 4 runtime by default. On some Windows
+        // installations its legacy TLS defaults cannot negotiate our HTTPS endpoint.
+        // Keep normal certificate validation; require TLS 1.2 for public services.
+        ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
         string root = null;
         for (int i = 0; i + 1 < args.Length; ++i)
             if (args[i] == "--install-root") root = args[++i];
@@ -858,7 +862,6 @@ sealed class MainForm : Form {
         TabPage helpPage = new TabPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
         logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
         tabs.TabPages.Add(settingsPage);
-        tabs.TabPages.Add(shaderPage);
         tabs.TabPages.Add(lanPage);
         tabs.TabPages.Add(onlinePage);
         tabs.TabPages.Add(inputPage);
@@ -867,6 +870,7 @@ sealed class MainForm : Form {
         tabs.TabPages.Add(versionPage);
         tabs.TabPages.Add(helpPage);
         tabs.TabPages.Add(logPage);
+        tabs.TabPages.Add(shaderPage);
         tabs.SelectedIndexChanged += delegate {
             if (tabs.SelectedTab == onlinePage) RefreshPublicStatus();
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
@@ -1620,8 +1624,13 @@ sealed class MainForm : Form {
         return embeddedNetIp.Length != 0 && embeddedNetProcess != null && !embeddedNetProcess.HasExited;
     }
     string EffectivePublicPortalUrl() {
-        if (OverlayServerIp().Length != 0)
-            return EmbeddedNetReady() ? "http://127.0.0.2:18080" : "";
+        if (OverlayServerIp().Length != 0) {
+            if (EmbeddedNetReady()) return "http://127.0.0.2:18080";
+            // First-time enrollment must reach the portal before the tailnet exists.
+            // Never send registration credentials to a public cleartext endpoint.
+            string bootstrap = PublicPortalUrl();
+            return bootstrap.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? bootstrap : "";
+        }
         return PublicPortalUrl();
     }
 

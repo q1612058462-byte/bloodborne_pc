@@ -37,3 +37,11 @@ patches.json
 # Local shadNet deployment settings and database
 /deploy/shadnet/.env
 /deploy/shadnet/data/
+/bbport-online-remote-*.zip
+/bbport-online-shadnet-build*.zip
+/bbport-online-init-*.zip
+/bbport-online-shadnet-archive-*.zip
+/bbport-online-shadnet-sha-*.zip
+/bbport-online-shadnet-cache-*.zip
+/bbport-online-shadnet-hash2-*.zip
+/bbport-online-proxy-fix-*.zip
