@@ -714,12 +714,15 @@ sealed class MainForm : Form {
     TextBox lanAddressBox, lanNpidBox, lanPasswordBox, lanEmailBox, lanSecretBox;
     TextBox onlineNpidBox, onlinePasswordBox, onlineQqBox, onlineNicknameBox;
     CheckBox onlineShowInList;
-    Label onlineServiceStatus, onlineCountStatus, onlineLoginStatus, onlineApplicationStatus,
+    Label onlineServiceStatus, onlineCountStatus, onlineLoginStatus, onlineApplicationStatus, onlineSetupStatus,
         onlineTailscaleStatus, onlineHeadscaleStatus;
     ListView onlineUsersList;
-    Button onlineRefreshButton, onlineApplyButton, onlineQueryButton, onlineRegisterButton,
+    Button onlineRefreshButton, onlineQuickButton, onlineApplyButton, onlineQueryButton, onlineRegisterButton,
         onlineTailscaleButton, onlineHeadscaleButton;
     string onlineApplicationId = "", onlineApplicationToken = "", onlineRegistrationKey = "";
+    bool onlineSetupInProgress, onlineSetupWaitingForNet;
+    DateTime onlineSetupDeadlineUtc;
+    readonly System.Windows.Forms.Timer onlineSetupTimer = new System.Windows.Forms.Timer();
     CheckBox lanHost, lanSeamless;
     Label lanStatus;
     Button lanStartServerButton, lanStopServerButton, lanTestButton, lanRegisterButton;
@@ -830,6 +833,11 @@ sealed class MainForm : Form {
         pump.Interval = 100;
         pump.Tick += delegate { DrainLog(); };
         pump.Start();
+        onlineSetupTimer.Interval = 1000;
+        onlineSetupTimer.Tick += delegate {
+            if (onlineSetupWaitingForNet && DateTime.UtcNow > onlineSetupDeadlineUtc)
+                FailGuidedOnline("内置私网连接超时。请检查网络、服务器状态，或使用下方分步按钮排查。");
+        };
         FormClosing += OnClosing;
         Shown += delegate { ShowWelcomeOnce(); };
     }
@@ -1084,6 +1092,16 @@ sealed class MainForm : Form {
         AddRow(onlineAccount, "昵称（申请时填写）", onlineNicknameBox, null);
         onlineShowInList = Check("同意在在线玩家列表中展示我的联机 ID、昵称和当前游戏");
         AddSpan(onlineAccount, onlineShowInList);
+        onlineQuickButton = new Button { Text = "一键准备并启动在线游戏", AutoSize = true,
+            Enabled = OverlayServerIp().Length != 0 };
+        onlineQuickButton.Click += delegate { StartGuidedOnline(); };
+        AddSpan(onlineAccount, Flow(onlineQuickButton));
+        onlineSetupStatus = Note(OverlayServerIp().Length == 0
+            ? "准备状态：此包仅用于本机服务测试；一键在线功能需远端发行包。"
+            : "准备状态：首次填写联机 ID、密码、QQ 和昵称；本机已保存申请凭据时只需 ID 和密码。");
+        AddSpan(onlineAccount, onlineSetupStatus);
+        AddSpan(onlineAccount, Note("启动器会依次检测服务、申请并注册账号、连接内置私网、验证游戏服务，再保存模式并启动游戏。不会跳过游戏内的召唤规则。"));
+        AddSpan(onlineAccount, Note("高级操作（遇到问题时才需要逐步使用）："));
         FlowLayoutPanel onlineAccountButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill,
             WrapContents = true };
         onlineApplyButton = new Button { Text = "申请一次性注册码", AutoSize = true };
@@ -1097,17 +1115,14 @@ sealed class MainForm : Form {
         AddSpan(onlineAccount, onlineAccountButtons);
         onlineApplicationStatus = Note("申请状态：尚未申请");
         AddSpan(onlineAccount, onlineApplicationStatus);
-        Button useOnline = new Button { Text = "使用在线联机模式", AutoSize = true };
-        useOnline.Click += delegate { SelectValue(coreMode, "public_online"); tabs.SelectedTab = onlinePage; };
-        AddSpan(onlineAccount, Flow(useOnline));
-        AddSpan(onlineAccount, Note("注册方法：填写 QQ 号、昵称和联机 ID，申请个人一次性注册码。正式服务默认由管理员审核；获批后点“查询申请进度”，再输入密码完成注册。服务器只保存 QQ 的不可逆摘要及末四位，用于去重和频率统计，不公开 QQ 号。"));
+        AddSpan(onlineAccount, Note("本测试服务自动批准有效申请；QQ 号仅用于去重和频率统计，服务器只保存不可逆摘要及末四位，不公开 QQ 原文。切勿与朋友共用联机 ID。"));
         AddSpan(onlineAccount, Link("打开作者主页，查看互助与账号申请方式", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
         AddSpan(onlineAccount, Note("交流 QQ 群：945992968（一群，已满）；892729104（二群，可加千人群讨论）。入群问题答案：细雨寒言。"));
         AddSpan(onlineAccount, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
             (PublicServiceIsLoopback() ? "本机 Docker 测试包不能供异地玩家直接联机。" : "")));
         onlineColumn.Controls.Add(onlineAccount.Parent);
         TableLayoutPanel onlineGuide = Group("联机步骤", 2);
-        AddSpan(onlineGuide, Note("1. 与朋友安装同一版本并分别领取账号。\r\n2. 确认两台电脑具备互相可达的安全网络连接。\r\n3. 游戏内使用相同联机密码，在可联机区域由房主摇召唤钟，另一人摇小共鸣钟。\r\n4. 灰色铃铛通常意味着当前区域或游戏状态不允许召唤。"));
+        AddSpan(onlineGuide, Note("1. 在“设置”页选择游戏本体并安装运行环境，两位玩家各用不同联机 ID。\r\n2. 填写账号资料，点击“一键准备并启动在线游戏”；启动器自动检查账号、私网和游戏服务。\r\n3. 游戏内使用相同联机密码，在可联机区域由房主摇召唤钟，另一人摇小共鸣钟。\r\n4. 灰色铃铛通常意味着当前区域或游戏状态不允许召唤。"));
         AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一私网；Headscale 负责设备入网，shadNet 仍负责游戏账号与召唤。只连得上控制服务器而玩家之间不通，仍可能无法召唤。"));
         onlineHeadscaleStatus = Note("自建私网控制服务：尚未检测");
         AddSpan(onlineGuide, onlineHeadscaleStatus);
@@ -1118,7 +1133,7 @@ sealed class MainForm : Form {
         onlineTailscaleButton = new Button { Text = "检测内置私网", AutoSize = true };
         onlineTailscaleButton.Click += delegate { RefreshTailscaleStatus(); };
         AddSpan(onlineGuide, Flow(onlineHeadscaleButton, onlineTailscaleButton));
-        AddSpan(onlineGuide, Note("启动器附带独立的 userspace 私网节点，不安装虚拟网卡，也不切换电脑现有的 Tailscale 网络。首次连接需在浏览器完成设备授权，并由管理员审批；不会保存共享入网密钥。当前仅限本地测试，玩家互通仍需双机验证。"));
+        AddSpan(onlineGuide, Note("启动器附带独立的 userspace 私网节点，不安装虚拟网卡，也不切换电脑现有的 Tailscale 网络。此测试服务会为已注册账号自动签发一次性设备密钥；不会保存共享入网密钥。真实双机互通仍需验证。"));
         onlineColumn.Controls.Add(onlineGuide.Parent);
 
         TableLayoutPanel helpColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
@@ -2103,30 +2118,34 @@ sealed class MainForm : Form {
         }
     }
 
-    void ConnectHeadscale() {
+    void ConnectHeadscale(bool guided = false) {
         string control = HeadscaleControlUrl();
         if (control.Length == 0) {
-            MessageBox.Show(this, "未配置有效的 Headscale 控制地址。正式服务须使用 HTTPS；HTTP 仅允许本机回环地址。",
-                "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (guided) FailGuidedOnline("未配置有效的 Headscale 控制地址。");
+            else MessageBox.Show(this, "未配置有效的 Headscale 控制地址。正式服务须使用 HTTPS；HTTP 仅允许本机回环地址。",
+                    "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         try {
             if (embeddedNetProcess != null && !embeddedNetProcess.HasExited) {
                 RefreshTailscaleStatus();
+                if (guided && EmbeddedNetReady()) VerifyGuidedOnlineRoute();
                 return;
             }
             string root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
             string executable = Path.Combine(root, "net", "bbport-net.exe");
             if (!File.Exists(executable))
                 throw new FileNotFoundException("未找到内置私网组件。请先安装／更新运行环境。", executable);
-            CheckHeadscaleHealth(control);
+            if (!guided) CheckHeadscaleHealth(control);
             onlineHeadscaleStatus.Text = "自建私网控制服务：可连接（仅确认控制端健康）";
             onlineHeadscaleStatus.ForeColor = Color.DarkGreen;
-            DialogResult choice = MessageBox.Show(this,
-                "将启动随启动器附带的独立私网节点。首次入网将使用已注册的在线账号自动申请一次性设备凭据；" +
-                "只有控制端健康不代表两台玩家电脑已互通。\r\n\r\n继续吗？",
-                "连接自建私网", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (choice != DialogResult.Yes) return;
+            if (!guided) {
+                DialogResult choice = MessageBox.Show(this,
+                    "将启动随启动器附带的独立私网节点。首次入网将使用已注册的在线账号自动申请一次性设备凭据；" +
+                    "只有控制端健康不代表两台玩家电脑已互通。\r\n\r\n继续吗？",
+                    "连接自建私网", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (choice != DialogResult.Yes) return;
+            }
             string state = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData), "BloodbornePC", "embedded-net");
             Directory.CreateDirectory(state);
@@ -2134,6 +2153,18 @@ sealed class MainForm : Form {
             string enrolledMarker = Path.Combine(state, "enrolled-control.txt");
             string deviceKey = "";
             string enrolledControl = File.Exists(enrolledMarker) ? File.ReadAllText(enrolledMarker).Trim() : "";
+            if (File.Exists(Path.Combine(identityDir, "tailscaled.state")) &&
+                !String.Equals(enrolledControl, control, StringComparison.OrdinalIgnoreCase)) {
+                // Keep an identity from a previous local/remote service untouched.
+                // A different control server needs a different userspace node state.
+                byte[] digest;
+                using (SHA256 sha = SHA256.Create())
+                    digest = sha.ComputeHash(Encoding.UTF8.GetBytes(control));
+                identityDir = Path.Combine(state, "identity-" +
+                    BitConverter.ToString(digest, 0, 6).Replace("-", "").ToLowerInvariant());
+                enrolledMarker = Path.Combine(identityDir, "enrolled-control.txt");
+                enrolledControl = File.Exists(enrolledMarker) ? File.ReadAllText(enrolledMarker).Trim() : "";
+            }
             bool hasIdentity = File.Exists(Path.Combine(identityDir, "tailscaled.state"));
             bool knownEnrolled = hasIdentity && String.Equals(enrolledControl, control,
                 StringComparison.OrdinalIgnoreCase);
@@ -2181,15 +2212,20 @@ sealed class MainForm : Form {
             embeddedNetIp = "";
             lastEmbeddedAuthUrl = "";
             Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
+            string markerForProcess = enrolledMarker;
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args) {
-                if (args.Data != null) HandleEmbeddedNetEvent(args.Data, control);
+                if (args.Data != null) HandleEmbeddedNetEvent(args.Data, control, markerForProcess);
             };
             process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) {
                 if (args.Data != null) Log("内置私网诊断：" + args.Data);
             };
             process.Exited += delegate {
+                if (!Object.ReferenceEquals(embeddedNetProcess, process)) return;
                 embeddedNetIp = "";
-                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate { RefreshTailscaleStatus(); });
+                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                    RefreshTailscaleStatus();
+                    if (onlineSetupWaitingForNet) FailGuidedOnline("内置私网进程意外退出。请查看运行日志。");
+                });
             };
             process.Start();
             if (deviceKey.Length > 0) {
@@ -2205,12 +2241,13 @@ sealed class MainForm : Form {
         } catch (Exception e) {
             onlineHeadscaleStatus.Text = "自建私网：连接准备失败（" + e.Message + "）";
             onlineHeadscaleStatus.ForeColor = Color.Firebrick;
-            MessageBox.Show(this, "无法启动内置私网连接：" + e.Message,
-                "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (guided) FailGuidedOnline("无法启动内置私网连接：" + e.Message);
+            else MessageBox.Show(this, "无法启动内置私网连接：" + e.Message,
+                    "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
-    void HandleEmbeddedNetEvent(string line, string control) {
+    void HandleEmbeddedNetEvent(string line, string control, string enrolledMarker) {
         Dictionary<string, object> item;
         try { item = JsonSerializer().DeserializeObject(line) as Dictionary<string, object>; }
         catch { return; }
@@ -2224,10 +2261,8 @@ sealed class MainForm : Form {
             if (IPAddress.TryParse(ip, out parsed) && parsed.AddressFamily == AddressFamily.InterNetwork) {
                 embeddedNetIp = ip;
                 try {
-                    string marker = Path.Combine(Environment.GetFolderPath(
-                        Environment.SpecialFolder.LocalApplicationData), "BloodbornePC",
-                        "embedded-net", "enrolled-control.txt");
-                    File.WriteAllText(marker, control, new UTF8Encoding(false));
+                    Directory.CreateDirectory(Path.GetDirectoryName(enrolledMarker));
+                    File.WriteAllText(enrolledMarker, control, new UTF8Encoding(false));
                 } catch (Exception e) { Log("无法保存私网入网状态：" + e.Message); }
             }
         }
@@ -2247,7 +2282,11 @@ sealed class MainForm : Form {
             } else if (state == "error") {
                 onlineTailscaleStatus.Text = "内置私网：连接失败（" + error + "）";
                 onlineTailscaleStatus.ForeColor = Color.Firebrick;
-            } else RefreshTailscaleStatus();
+                if (onlineSetupWaitingForNet) FailGuidedOnline("内置私网连接失败：" + error);
+            } else {
+                RefreshTailscaleStatus();
+                if (state == "ready" && onlineSetupWaitingForNet) VerifyGuidedOnlineRoute();
+            }
         });
     }
 
@@ -2290,6 +2329,220 @@ sealed class MainForm : Form {
                 } catch (ArgumentException) { }
             }
             throw new IOException("在线服务请求失败，请稍后重试。");
+        }
+    }
+
+    void SetGuidedOnlineBusy(bool active) {
+        onlineSetupInProgress = active;
+        onlineQuickButton.Enabled = !active && OverlayServerIp().Length != 0;
+        onlineApplyButton.Enabled = !active;
+        onlineQueryButton.Enabled = !active;
+        onlineRegisterButton.Enabled = !active;
+        onlineHeadscaleButton.Enabled = !active;
+        onlineNpidBox.Enabled = !active;
+        onlinePasswordBox.Enabled = !active;
+        onlineQqBox.Enabled = !active;
+        onlineNicknameBox.Enabled = !active;
+        onlineShowInList.Enabled = !active;
+        coreMode.Enabled = !active;
+        rootBox.Enabled = !active;
+        gameBox.Enabled = !active;
+        saveRootBox.Enabled = !active;
+        UpdateButtons();
+    }
+
+    void GuidedOnlineStatus(string message) {
+        onlineSetupStatus.Text = "准备状态：" + message;
+        onlineSetupStatus.ForeColor = Color.DarkOrange;
+        Log("在线联机准备：" + message);
+    }
+
+    void FailGuidedOnline(string message) {
+        if (!onlineSetupInProgress) return;
+        onlineSetupWaitingForNet = false;
+        onlineSetupTimer.Stop();
+        SetGuidedOnlineBusy(false);
+        onlineSetupStatus.Text = "准备状态：未完成——" + message;
+        onlineSetupStatus.ForeColor = Color.Firebrick;
+        Log("在线联机准备失败：" + message);
+        MessageBox.Show(this, message, "在线联机准备失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    void GuidedOnlineUi(Action action) {
+        if (IsDisposed || !IsHandleCreated) throw new OperationCanceledException("启动器已关闭。");
+        Invoke(action);
+    }
+
+    void StartGuidedOnline() {
+        if (onlineSetupInProgress) return;
+        if (busy) { Warn("请先等待当前安装或游戏进程结束。"); return; }
+        if (!onlineApplyButton.Enabled || !onlineQueryButton.Enabled || !onlineRegisterButton.Enabled) {
+            Warn("另一项在线账号操作正在进行，请稍候。"); return;
+        }
+        string npid = onlineNpidBox.Text.Trim();
+        string password = onlinePasswordBox.Text;
+        string qq = onlineQqBox.Text.Trim();
+        string nickname = onlineNicknameBox.Text.Trim();
+        if (!Regex.IsMatch(npid, @"^[A-Za-z0-9_-]{3,16}$") || password.Length < 8 || password.Length > 128) {
+            Warn("请填写 3–16 位英文／数字联机 ID，以及 8–128 位账号密码。"); return;
+        }
+        bool hasApplication = onlineApplicationId.Length > 0 && onlineApplicationToken.Length > 0;
+        if (!hasApplication && (!Regex.IsMatch(qq, @"^[1-9][0-9]{4,11}$") ||
+                                nickname.Length < 1 || nickname.Length > 24)) {
+            Warn("首次申请还需填写有效 QQ 号和 1–24 字昵称。"); return;
+        }
+        if (OverlayServerIp().Length == 0 || HeadscaleControlUrl().Length == 0) {
+            Warn("此安装包未配置远端私网服务，请使用在线测试版安装包。"); return;
+        }
+        string root;
+        try { root = Path.GetFullPath(rootBox.Text.Trim().Trim('"')); }
+        catch { Warn("请先在“设置”页选择有效运行环境目录。"); return; }
+        if (!File.Exists(Path.Combine(root, "net", "bbport-net.exe"))) {
+            Warn("运行环境缺少内置私网组件。请先点击“安装 / 更新运行环境”。"); return;
+        }
+        if (!CheckGame()) { Warn("请先在“设置”页选择正确的游戏本体目录。"); return; }
+        if (saveRootBox.Text.Trim().Length == 0) { Warn("请先选择玩家数据目录。"); return; }
+
+        string applicationId = onlineApplicationId, applicationToken = onlineApplicationToken;
+        bool showInList = onlineShowInList.Checked;
+        SetGuidedOnlineBusy(true);
+        GuidedOnlineStatus("1/4 正在检查在线服务……");
+        Thread worker = new Thread(new ThreadStart(delegate {
+            try {
+                CheckHeadscaleHealth(HeadscaleControlUrl());
+                Dictionary<string, object> result = null;
+                if (applicationId.Length > 0 && applicationToken.Length > 0) {
+                    GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 正在检查已有账号……"); });
+                    Dictionary<string, object> query = new Dictionary<string, object>();
+                    query["application_id"] = applicationId;
+                    query["application_token"] = applicationToken;
+                    try { result = OnlinePortalRequest("/v1/application", query); }
+                    catch (InvalidOperationException e) {
+                        if (!e.Message.Contains("申请凭据无效")) throw;
+                        // A prior local-Docker application cannot authorize the new server.
+                        applicationId = "";
+                        applicationToken = "";
+                    }
+                }
+                if (applicationId.Length == 0 || applicationToken.Length == 0) {
+                    if (!Regex.IsMatch(qq, @"^[1-9][0-9]{4,11}$") || nickname.Length < 1 || nickname.Length > 24)
+                        throw new InvalidOperationException("旧申请不属于当前服务。请填写 QQ 号和昵称后重试。");
+                    GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 正在申请并验证账号……"); });
+                    Dictionary<string, object> apply = new Dictionary<string, object>();
+                    apply["qq"] = qq; apply["nickname"] = nickname; apply["npid"] = npid;
+                    apply["show_in_list"] = showInList;
+                    result = OnlinePortalRequest("/v1/apply", apply);
+                    applicationId = PublicField(result, "application_id");
+                    applicationToken = PublicField(result, "application_token");
+                    if (applicationId.Length == 0 || applicationToken.Length == 0)
+                        throw new InvalidDataException("服务器没有返回完整申请凭据。");
+                    string savedId = applicationId, savedToken = applicationToken;
+                    GuidedOnlineUi((Action)delegate {
+                        onlineApplicationId = savedId;
+                        onlineApplicationToken = savedToken;
+                        PersistOnlineApplication();
+                    });
+                }
+                if (PublicField(result, "npid").Length > 0 &&
+                    !PublicField(result, "npid").Equals(npid, StringComparison.Ordinal))
+                    throw new InvalidOperationException("已有申请属于另一个联机 ID。请恢复原 ID，或使用分步操作处理账号。");
+                string state = PublicField(result, "state");
+                for (int attempt = 0; state == "pending" && attempt < 24; ++attempt) {
+                    GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 等待账号审核，自动重试……"); });
+                    Thread.Sleep(5000);
+                    if (IsDisposed) return;
+                    Dictionary<string, object> query = new Dictionary<string, object>();
+                    query["application_id"] = applicationId;
+                    query["application_token"] = applicationToken;
+                    result = OnlinePortalRequest("/v1/application", query);
+                    state = PublicField(result, "state");
+                }
+                if (state == "pending") throw new InvalidOperationException("账号仍在等待审核，稍后再点“一键准备”即可继续。");
+                if (state == "expired") throw new InvalidOperationException("账号申请已过期。请使用分步操作处理，或联系管理员。");
+                if (state == "approved") {
+                    GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 正在完成账号注册……"); });
+                    string key = PublicField(result, "registration_key");
+                    if (key.Length == 0) throw new InvalidDataException("服务器没有返回一次性注册码。");
+                    Dictionary<string, object> register = new Dictionary<string, object>();
+                    register["application_id"] = applicationId;
+                    register["application_token"] = applicationToken;
+                    register["registration_key"] = key;
+                    register["password"] = password;
+                    Dictionary<string, object> registration = OnlinePortalRequest("/v1/register", register);
+                    object ok;
+                    if (!registration.TryGetValue("ok", out ok) || !(ok is bool) || !(bool)ok) {
+                        byte code;
+                        string raw = PublicField(registration, "server_code");
+                        throw new InvalidOperationException(byte.TryParse(raw, out code) ?
+                            ShadNetError(code) : "服务器未完成账号注册。");
+                    }
+                } else if (state != "registered") throw new InvalidDataException("未知申请状态：" + state);
+                GuidedOnlineUi((Action)delegate {
+                    onlineRegistrationKey = "";
+                    onlineApplicationStatus.Text = "申请状态：账号已注册。";
+                    PersistOnlineApplication();
+                    GuidedContinueToNet();
+                });
+            } catch (Exception e) {
+                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate { FailGuidedOnline(e.Message); });
+            }
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void GuidedContinueToNet() {
+        GuidedOnlineStatus("3/4 正在连接内置私网……");
+        onlineSetupWaitingForNet = true;
+        onlineSetupDeadlineUtc = DateTime.UtcNow.AddSeconds(60);
+        onlineSetupTimer.Start();
+        if (EmbeddedNetReady()) { VerifyGuidedOnlineRoute(); return; }
+        ConnectHeadscale(true);
+    }
+
+    void VerifyGuidedOnlineRoute() {
+        if (!onlineSetupInProgress || !onlineSetupWaitingForNet || !EmbeddedNetReady()) return;
+        onlineSetupWaitingForNet = false;
+        onlineSetupTimer.Stop();
+        GuidedOnlineStatus("4/4 正在验证游戏服务……");
+        Thread worker = new Thread(new ThreadStart(delegate {
+            string message = "";
+            bool ok = false;
+            for (int attempt = 0; attempt < 5 && !ok; ++attempt) {
+                ok = CheckLanStatus("127.0.0.2:31313", out message);
+                if (ok) ok = CheckGuidedGameGateway(out message);
+                if (!ok && attempt < 4) Thread.Sleep(1500);
+            }
+            if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                if (!onlineSetupInProgress) return;
+                if (!ok) { FailGuidedOnline("私网已连接，但游戏服务未响应：" + message); return; }
+                SelectValue(coreMode, "public_online");
+                SetGuidedOnlineBusy(false);
+                onlineSetupStatus.Text = "准备状态：账号、私网和游戏服务已就绪，正在启动游戏。";
+                onlineSetupStatus.ForeColor = Color.DarkGreen;
+                StartGame();
+            });
+        }));
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    static bool CheckGuidedGameGateway(out string message) {
+        try {
+            using (TcpClient client = new TcpClient()) {
+                IAsyncResult pending = client.BeginConnect("127.0.0.2", 31313, null, null);
+                if (!pending.AsyncWaitHandle.WaitOne(4000)) throw new IOException("游戏协议连接超时。");
+                client.EndConnect(pending);
+                client.ReceiveTimeout = 4000;
+                byte[] header = ReadExactly(client.GetStream(), 15);
+                if (header[0] != 3 || ReadInt32LE(header, 3) < 15)
+                    throw new InvalidDataException("收到不兼容的游戏协议响应。");
+            }
+            message = "游戏协议与召唤服务均可连接。";
+            return true;
+        } catch (Exception e) {
+            message = "TCP 31313 游戏协议不可用：" + e.Message;
+            return false;
         }
     }
 
@@ -3658,9 +3911,9 @@ sealed class MainForm : Form {
         logBox.AppendText(text.ToString());
     }
     void UpdateButtons() {
-        installButton.Enabled = !busy;
-        saveButton.Enabled = !busy;
-        playButton.Enabled = !busy;
+        installButton.Enabled = !busy && !onlineSetupInProgress;
+        saveButton.Enabled = !busy && !onlineSetupInProgress;
+        playButton.Enabled = !busy && !onlineSetupInProgress;
         if (shaderExportButton != null) shaderExportButton.Enabled = !busy;
         if (shaderImportButton != null) shaderImportButton.Enabled = !busy;
         if (lanStartServerButton != null)
