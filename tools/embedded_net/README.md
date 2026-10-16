@@ -26,7 +26,7 @@
     { "tailnet_port": 18080, "local": "127.0.0.1:18080" }
   ],
   "udp_publishes": [
-    { "tailnet_port": 31314, "local": "127.0.0.1:31314" }
+    { "tailnet_port": 31314, "local": "127.0.0.1:31314", "stun_source": true }
   ]
 }
 ```
@@ -40,6 +40,12 @@
 `BBTS`、4 字节 IPv4、2 字节网络序端口、原始游戏 UDP 帧；该内部帧只允许
 在回环接口传输，尾网侧只传原始游戏帧。需要两个方向都能通；服务器健康与
 Headscale 节点 `ready` 并不能证明 Bloodborne 召唤成功。
+
+远端服务器在 `31314/udp` 的 publish 上启用 `stun_source`：桥接从已经认证的
+私网 UDP 来源生成 `BBST` 来源头，shadNet 的远端镜像据此登记玩家的
+`100.64.0.0/10:31316` 地址，而不是 Docker 网桥的 `172.18.0.1`。
+客户端的 STUN 目标必须是服务端私网 IP，不能是 TCP 代理 `127.0.0.2`。
+远端 bridge 和 shadNet 镜像须一起更新；单独更新其中一个会让 STUN 失败。
 
 本机已验证两个独立节点的 TCP 门户/WebAPI 请求和双向 UDP 人工数据包。
 真实双机游戏测试、长期运行、NAT/DERP 切换、访问策略与第三方依赖许可清单

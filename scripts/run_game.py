@@ -424,6 +424,11 @@ def main():
             if not prebuilt:
                 build()
         user_dir = Path(env('BB_USER_DIR', os.path.join(data, 'user')))
+        # The vendored GPU path table initializes before bbgpu_init receives
+        # --user. Set its root in the child environment now, and create it so
+        # path_util never falls back to AppData/Roaming/shadPS4 on Windows.
+        user_dir.mkdir(parents=True, exist_ok=True)
+        os.environ['BB_GPU_USER_DIR'] = str(user_dir.resolve())
         if env('BB_ONLINE') == '1':
             online_overrides(os.environ, user_dir)
         command = [probe, os.path.join(out, 'boot-linked.bin'),

@@ -40,6 +40,10 @@ COPY patches/qt64-server-api.patch /tmp/qt64-server-api.patch
 RUN cd /src && git apply --unidiff-zero /tmp/qt64-server-api.patch
 COPY patches/online-stats.patch /tmp/online-stats.patch
 RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
+# This pinned upstream version needs to retain the authenticated tailnet
+# source when Docker's loopback UDP port mapping rewrites the sender address.
+COPY overrides/stun_server.cpp /src/src/stun_server.cpp
+COPY overrides/stun_server.h /src/src/stun_server.h
 RUN --mount=type=cache,target=/src/build cmake -S /src -B /src/build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     -DFETCHCONTENT_SOURCE_DIR_ABSL=/src/externals/abseil \

@@ -26,6 +26,7 @@ services:
     restart: unless-stopped
     environment:
       SHADNET_SEAMLESS: "false"
+      BBPORT_TRUST_TAILNET_STUN: "1"
     ports:
       - "127.0.0.1:31313:31313/tcp"
       - "127.0.0.1:31314:31314/udp"

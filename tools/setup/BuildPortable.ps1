@@ -105,7 +105,6 @@ foreach ($packageName in @('protobuf', 'abseil-cpp', 'openssl', 'miniupnpc', 'zl
         }
     }
 }
-Copy-RequiredFile (Join-Path $rootPath 'local_deps\shadp2p\client\shadPS4.exe') (Join-Path $stage 'shadp2p\client\shadPS4.exe')
 $shadnetSource = Join-Path $rootPath 'local_deps\shadp2p\server'
 $shadnetStage = Join-Path $stage 'shadp2p\server'
 foreach ($relative in @(
@@ -118,7 +117,6 @@ foreach ($relative in @(
 )) {
     Copy-RequiredFile (Join-Path $shadnetSource $relative) (Join-Path $shadnetStage $relative)
 }
-Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\client\LICENSE-GPL-2.0.txt')
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\server\LICENSE-GPL-2.0.txt')
 Copy-RequiredFile (Join-Path $packaging 'SHADP2P_THIRD_PARTY.txt') (Join-Path $stage 'shadp2p\THIRD_PARTY.txt')
 Copy-RequiredFile (Join-Path $packaging 'APP_VERSION.txt') (Join-Path $stage 'APP_VERSION.txt')
@@ -156,7 +154,7 @@ $buildInfo = @(
     'Local feature: shader cache status and same-version/same-GPU ZIP merge; optional frame/GPU diagnostics'
     'Local feature: save filename normalisation and backed-up character renaming'
     'Local feature: original gothic launcher artwork and gamepad motion sensors'
-    'Local feature: paired shadp2p/shadNet LAN core, portable network profile and LAN account registration'
+    'Local feature: native bbport LAN core with bundled shadNet server and LAN account registration'
     'Local feature: native bbport online play using the complete shadp2p network, NP, WebAPI, Matching2 and signaling stack'
     'Local feature: bundled userspace tsnet helper for isolated self-hosted Headscale connectivity (experimental)'
     'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'

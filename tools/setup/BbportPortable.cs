@@ -613,8 +613,7 @@ sealed class MainForm : Form {
     static readonly Choice[] CoreModes = {
         new Choice("原生单机核心（bbport）", "native"),
         new Choice("局域网原生联机（bbport + shadNet）", "native_lan"),
-        new Choice("在线联机（内置服务，测试版）", "public_online"),
-        new Choice("局域网联机核心（shadp2p，实验性）", "shadp2p") };
+        new Choice("在线联机（内置服务，测试版）", "public_online") };
     static readonly string[][] CheatDefinitions = {
         new string[] { "infinite_health", "无限血（受击后立即恢复）", "Trainer Infinite Health (CUSA03173 1.09)", "experimental" },
         new string[] { "infinite_echoes", "无限血之回响（固定为 666,666,666）", "Trainer Infinite Echoes (CUSA03173 1.09)", "experimental" },
@@ -910,13 +909,12 @@ sealed class MainForm : Form {
         coreMode.SelectedIndexChanged += delegate {
             string selected = Value(coreMode);
             playButton.Text = selected == "public_online" ? "启动在线联机" :
-                selected == "native_lan" ? "启动局域网联机" :
-                selected == "shadp2p" ? "启动 shadp2p 联机" : "启动游戏";
+                selected == "native_lan" ? "启动局域网联机" : "启动游戏";
             if (saveRootBox != null) RefreshSaveManager();
         };
         AddSpan(core, Note("“局域网原生联机”连接自己填写的 shadNet；“在线联机”使用安装包内预配置的服务。" +
             (PublicServiceIsLoopback() ? "当前为本机 Docker 测试，仅供同机使用。" : "") +
-            "两者都基于 bbport 的网络协议栈；独立 shadp2p 核心仍可用于兼容测试。"));
+            "两者都使用 bbport 核心与 shadNet 服务；不再安装独立 shadPS4 客户端。"));
         column.Controls.Add(core.Parent);
 
         TableLayoutPanel recommended = Group("推荐配置", 2);
@@ -1050,7 +1048,7 @@ sealed class MainForm : Form {
 
         TableLayoutPanel lanCompatibility = Group("兼容性与存档", 2);
         AddSpan(lanCompatibility, Note("原生 bbport 在线层移植自 shadp2p/shadNet 的完整协议实现，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
-        AddSpan(lanCompatibility, Note("联机核心存档固定保存在“玩家数据目录\\shadp2p-home\\1000\\savedata”。选择联机模式后，存档管理页会自动管理和备份这一套存档，不会覆盖原生单机存档。"));
+        AddSpan(lanCompatibility, Note("原生联机使用启动器设置的玩家数据目录。旧 shadp2p-home 存档不会删除；如需迁移，请先在“存档管理”备份并验证后导入。"));
         lanColumn.Controls.Add(lanCompatibility.Parent);
 
         TableLayoutPanel onlineColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
@@ -1516,7 +1514,8 @@ sealed class MainForm : Form {
         autoBackup.Checked = Get(state, "auto_backup", "1") == "1";
         string oldHuntersPath = Path.Combine(saveRootBox.Text, "addcont", "CUSA03173", "SPEXPANSIONDLC03");
         oldHunters.Checked = Directory.Exists(oldHuntersPath) || Get(state, "old_hunters", "0") == "1";
-        SelectValue(coreMode, Get(state, "core_mode", "native"));
+        string savedCoreMode = Get(state, "core_mode", "native");
+        SelectValue(coreMode, savedCoreMode == "shadp2p" ? "native_lan" : savedCoreMode);
         lanAddressBox.Text = Get(state, "lan_address", LocalLanAddress());
         lanNpidBox.Text = Get(state, "lan_npid", "");
         lanPasswordBox.Text = UnprotectSecret(Get(state, "lan_password_dpapi", ""));
@@ -2897,6 +2896,7 @@ sealed class MainForm : Form {
         options.Env["SHADPS4_P2P_PORT"] = overlayGame ? "31316" : "";
         options.Env["BB_TSNET_BRIDGE_PORT"] = overlayGame ? "31416" : "";
         options.Env["BB_TSNET_NODE_IP"] = overlayGame ? embeddedNetIp : "";
+        options.Env["BB_TSNET_SERVER_IP"] = overlayGame ? OverlayServerIp() : "";
         options.Env["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] =
             validOnlineEndpoint && options.LanSeamless ? "1" : "";
         List<string> enabledCheats = new List<string>();

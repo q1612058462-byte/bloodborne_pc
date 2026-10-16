@@ -39,6 +39,7 @@ type endpoint struct {
 type publish struct {
 	TailnetPort int    `json:"tailnet_port"`
 	Local       string `json:"local"`
+	StunSource  bool   `json:"stun_source,omitempty"`
 }
 
 type config struct {
@@ -154,6 +155,16 @@ func (c config) validate() error {
 			return err
 		}
 	}
+	for _, e := range c.TCPPublishes {
+		if e.StunSource {
+			return errors.New("stun_source requires UDP publish")
+		}
+	}
+	for _, e := range c.UDPPublishes {
+		if e.StunSource && e.TailnetPort != 31314 {
+			return errors.New("stun_source is only valid for shadNet UDP 31314")
+		}
+	}
 	return nil
 }
 
@@ -182,6 +193,21 @@ func bridgeFrame(ip netip.Addr, port uint16, payload []byte) ([]byte, error) {
 	}
 	out := make([]byte, bridgeHeaderLen+len(payload))
 	copy(out[:4], "BBTS")
+	a := ip.As4()
+	copy(out[4:8], a[:])
+	binary.BigEndian.PutUint16(out[8:10], port)
+	copy(out[bridgeHeaderLen:], payload)
+	return out, nil
+}
+
+// BBST is added only by the trusted server-side tailnet bridge. The game
+// packet cannot claim its own source address across Docker's UDP NAT.
+func stunSourceFrame(ip netip.Addr, port uint16, payload []byte) ([]byte, error) {
+	if !tailnetV4.Contains(ip) || port != 31316 || len(payload) > 65507-bridgeHeaderLen {
+		return nil, errors.New("invalid BBST source")
+	}
+	out := make([]byte, bridgeHeaderLen+len(payload))
+	copy(out[:4], "BBST")
 	a := ip.As4()
 	copy(out[4:8], a[:])
 	binary.BigEndian.PutUint16(out[8:10], port)
@@ -308,7 +334,7 @@ func startBridges(ctx context.Context, srv *tsnet.Server, c config, ip netip.Add
 			return stop(err)
 		}
 		closers = append(closers, pc)
-		go serveUDPPublish(ctx, pc, p.Local)
+		go serveUDPPublish(ctx, pc, p.Local, p.StunSource)
 	}
 	bridgePort := 0
 	if c.GameUDPPort != 0 && c.UDPBridgePort != 0 {
@@ -427,7 +453,7 @@ func serveUDPProxy(ctx context.Context, srv *tsnet.Server, local net.PacketConn,
 	}
 }
 
-func serveUDPPublish(ctx context.Context, remote net.PacketConn, localTarget string) {
+func serveUDPPublish(ctx context.Context, remote net.PacketConn, localTarget string, stunSource bool) {
 	buf := make([]byte, 65535)
 	var mu sync.Mutex
 	sessions := map[string]net.Conn{}
@@ -445,6 +471,9 @@ func serveUDPPublish(ctx context.Context, remote net.PacketConn, localTarget str
 		}
 		peer, err := netip.ParseAddrPort(src.String())
 		if err != nil || !tailnetV4.Contains(peer.Addr()) {
+			continue
+		}
+		if stunSource && peer.Port() != 31316 {
 			continue
 		}
 		key := peer.String()
@@ -468,7 +497,14 @@ func serveUDPPublish(ctx context.Context, remote net.PacketConn, localTarget str
 		}
 		mu.Unlock()
 		if err == nil && conn != nil {
-			_, _ = conn.Write(buf[:n])
+			payload := buf[:n]
+			if stunSource {
+				payload, err = stunSourceFrame(peer.Addr(), peer.Port(), payload)
+				if err != nil {
+					continue
+				}
+			}
+			_, _ = conn.Write(payload)
 		}
 	}
 }

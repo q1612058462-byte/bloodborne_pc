@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -665,6 +666,24 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
         g_mm.server_addr = client ? client->GetAddrServer() : 0;
         if (g_mm.server_addr == 0) {
             g_mm.server_addr = IpStringToAddr(server_host);
+        }
+        // The TCP connection uses the launcher's 127.0.0.2 proxy. Signaling/STUN
+        // instead travels through the game UDP bridge, which only accepts a
+        // tailnet destination. Sending it to 127.0.0.2 silently drops every
+        // ping and leaves all peers without a resolvable endpoint.
+        const char* bridge = std::getenv("BB_TSNET_BRIDGE_PORT");
+        if (client && bridge != nullptr && *bridge != '\0') {
+            const char* overlay_server = std::getenv("BB_TSNET_SERVER_IP");
+            const u32 overlay_addr = overlay_server ? IpStringToAddr(overlay_server) : 0;
+            const u32 first_octet = overlay_addr & 0xff;
+            const u32 second_octet = (overlay_addr >> 8) & 0xff;
+            if (first_octet == 100 && second_octet >= 64 && second_octet <= 127) {
+                g_mm.server_addr = overlay_addr;
+            } else {
+                LOG_ERROR(Lib_NpMatching2,
+                          "BB_TSNET_SERVER_IP must be a 100.64.0.0/10 IPv4 address in bridge mode");
+                g_mm.server_addr = 0;
+            }
         }
         g_mm.server_udp_port =
             matching2_enabled ? Libraries::Net::sceNetHtons(static_cast<u16>(tcp_port + 1)) : 0;

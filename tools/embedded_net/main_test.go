@@ -34,6 +34,24 @@ func TestBridgeRejectsOutsideTailnet(t *testing.T) {
 	}
 }
 
+func TestStunSourceFrame(t *testing.T) {
+	ip := netip.MustParseAddr("100.64.1.12")
+	frame, err := stunSourceFrame(ip, 31316, []byte{0, 1, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{'B', 'B', 'S', 'T', 100, 64, 1, 12, 0x7a, 0x54, 0, 1, 2}
+	if string(frame) != string(want) {
+		t.Fatalf("unexpected BBST frame: %v", frame)
+	}
+	if _, err := stunSourceFrame(netip.MustParseAddr("192.168.1.2"), 31316, []byte{1}); err == nil {
+		t.Fatal("accepted non-tailnet source")
+	}
+	if _, err := stunSourceFrame(ip, 1234, []byte{1}); err == nil {
+		t.Fatal("accepted non-game source port")
+	}
+}
+
 func TestConfigRequiresLocalBindingsAndSafeControlURL(t *testing.T) {
 	c := config{ControlURL: "http://127.0.0.1:18081", StateDir: t.TempDir(), Hostname: "hunter",
 		TCPProxies: []endpoint{{Listen: "127.0.0.2:31313", Remote: "100.64.0.1:31313"}}}
@@ -48,5 +66,17 @@ func TestConfigRequiresLocalBindingsAndSafeControlURL(t *testing.T) {
 	c.TCPProxies[0].Listen = "0.0.0.0:31313"
 	if err := c.validate(); err == nil {
 		t.Fatal("accepted public local listener")
+	}
+}
+
+func TestStunSourceOnlyOnShadNetUDP(t *testing.T) {
+	c := config{ControlURL: "http://127.0.0.1:18081", StateDir: t.TempDir(), Hostname: "server",
+		UDPPublishes: []publish{{TailnetPort: 31314, Local: "127.0.0.1:31314", StunSource: true}}}
+	if err := c.validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.UDPPublishes[0].TailnetPort = 31315
+	if err := c.validate(); err == nil {
+		t.Fatal("accepted BBST on non-STUN UDP publish")
 	}
 }

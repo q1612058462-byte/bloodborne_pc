@@ -43,3 +43,18 @@ Only after checking remote `/health`, `/v1/status`, a real launcher
 enrollment and a two-player round-trip should a distributable launcher be
 configured with this host. Keep the game connection behind the overlay;
 never fall back to the public IP for TCP 31313.
+
+For the online bell/STUN fix, update the server `bridge` and `shadnet` images
+together; the new `BBST` source envelope is intentionally not compatible with
+the older server image. Keep named volumes and the Headscale identity intact.
+Because `portal` uses `network_mode: service:shadnet`, recreating `shadnet`
+without recreating `portal` leaves the portal attached to the old network
+namespace and `/v1/status` returns HTTP 502. After the shadNet/bridge update,
+run `docker compose -f compose.yaml up -d --no-deps --force-recreate portal`
+and verify `https://82.157.168.20/v1/status` before inviting testers.
+After both players reinstall a client runtime built with the matching STUN
+target fix, a bell test should produce two distinct `STUN ping` entries with
+`100.64.0.0/10:31316` endpoints in shadNet logs. `GetServerFeatures` and
+message visibility alone are insufficient. If STUN entries appear but the
+bell still times out, inspect `RequestSignalingInfos` and player-to-player
+UDP 31316 next; the policy file already permits that port.
