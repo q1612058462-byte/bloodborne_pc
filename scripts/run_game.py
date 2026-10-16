@@ -19,6 +19,7 @@ BB_DRY_RUN=1    every step but the last: prints the bb-probe command and its env
 The other variables are described where they are read below.
 """
 import glob
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from mods import remove_overlay
 
@@ -46,6 +49,14 @@ INITIAL_ENVIRONMENT = dict(os.environ)
 COMMUNITY_SERVER = 'https://thehuntersdream.com'
 GAME_SERVER = 'https://ss4.scej-network.jp:20443'
 COMMUNITY_API_PORT = 18671
+BBSC_LAB_HASHES = {
+    'bbsc-launch.exe': '087c83ce466ebf3de8395731000293ff9b7ea83c735a0664fb5e32c908f62043',
+    'bbsc.dll': '239ae3725613d5b090ed7f2bed33cc1ee2031b08f4dc8897220c7f4c22da7445',
+    'LICENSE.txt': '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643',
+    'NOTICE.txt': '9919b68f5e5f4f80d2b316c7dae40c45d0d43ce6274670d67de655fb11f01f07',
+    'SUPPORTERS.txt': '64924b1cf91ed231969bdd5dd0c6da0f15ca990c2bd65959636612f9316491aa',
+    'mod.json': '8b28fe2ac94cc14ed8640402a28255d2cf32a4864030cb9b8081fd0670727cd4',
+}
 
 
 def env(name, default=''):
@@ -71,18 +82,30 @@ def online_overrides(environment, user_dir):
     """Write and select the host routes required by Bloodborne's native online bootstrap."""
     user_dir.mkdir(parents=True, exist_ok=True)
     custom = user_dir / 'host_overrides.custom.json'
+    if environment.get('BBSC_LAB_MOD') == '1' and custom.exists():
+        raise ValueError('BBSC lab cannot use host_overrides.custom.json; move it out of the isolated test save')
     path = custom if custom.exists() else user_dir / 'host_overrides.json'
     if path != custom:
         community = (environment.get('BB_COMMUNITY_SERVER') or COMMUNITY_SERVER).rstrip('/')
         if '://' not in community:
             community = 'https://' + community
-        community_host = community.split('://', 1)[1].split('/', 1)[0]
+        parsed = urllib.parse.urlsplit(community)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise ValueError(f'Invalid BB_COMMUNITY_SERVER: {community!r}')
+        community_host = parsed.hostname
         webapi = (environment.get('BB_SHADNET_WEBAPI') or
                   'http://127.0.0.1:31315').rstrip('/')
         overrides = {GAME_SERVER: community}
         if summon_service(webapi):
+            # Public community ss.info uses 18671; the isolated BBSC lab serves
+            # its own game API on 32443. Keep both routes, without duplicating a
+            # port when BB_COMMUNITY_SERVER already contains one.
+            ports = {COMMUNITY_API_PORT}
+            if parsed.port:
+                ports.add(parsed.port)
             for scheme in ('https', 'http'):
-                overrides[f'{scheme}://{community_host}:{COMMUNITY_API_PORT}/summon_messenger'] = webapi
+                for port in ports:
+                    overrides[f'{scheme}://{community_host}:{port}/summon_messenger'] = webapi
             print(f'Co-op: summon signs through {webapi}')
         else:
             print(f'Co-op: {webapi} has no summon service; summon signs through {community}')
@@ -261,6 +284,19 @@ def start(command, probe, overlay):
     if WINDOWS:
         print('Starting:', quoted(command), flush=True)
         try:
+            if env('BBSC_LAB_MOD') == '1':
+                # bbsc-launch.exe is a GUI-subsystem injector. When it is
+                # launched without explicit standard handles, its suspended
+                # bb-probe child can exit with code 1 after the hooks load.
+                # Give the injector inheritable pipe handles and forward the
+                # child's diagnostics into the launcher's normal run log.
+                with subprocess.Popen([str(c) for c in command], stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, encoding='utf-8', errors='replace',
+                                      bufsize=1) as child:
+                    for line in child.stdout:
+                        print(line, end='', flush=True)
+                    return child.wait()
             return subprocess.call([str(c) for c in command])
         except KeyboardInterrupt:
             return 130
@@ -286,6 +322,64 @@ def start(command, probe, overlay):
     signal.signal(signal.SIGINT, forward)
     # The view is removed only after the game (and any restart it exec'd) has ended.
     return exit_status(child.wait())
+
+
+def bbsc_lab_command(command, probe, runtime):
+    """Opt-in BBSC injector for the isolated Windows seamless lab only.
+
+    The launcher imports verified upstream binaries into the installed runtime.
+    BBSC_LAB_COMPONENT_DIR is for isolated developer tests outside that runtime.
+    """
+    if os.environ.get('BBSC_LAB_MOD') != '1':
+        return command
+    if not WINDOWS or os.environ.get('BB_SEAMLESS_LAB') != '1' or os.environ.get('BB_ONLINE') != '1':
+        raise ValueError('BBSC lab mod requires Windows and the isolated native-online seamless lab')
+    if os.environ.get('BB_SKIP_GAME_CHECK') == '1':
+        raise ValueError('BBSC lab mod cannot run with BB_SKIP_GAME_CHECK=1')
+    server = urllib.parse.urlsplit('//' + os.environ.get('BB_SHADNET_SERVER', ''))
+    api = urllib.parse.urlsplit(os.environ.get('BB_COMMUNITY_SERVER', ''))
+    webapi = urllib.parse.urlsplit(os.environ.get('BB_SHADNET_WEBAPI', ''))
+    relay = urllib.parse.urlsplit('//' + os.environ.get('BBSC_RELAY', ''))
+    if (not server.hostname or server.port != 32313 or
+            api.scheme != 'http' or api.hostname != server.hostname or api.port != 32443 or
+            webapi.scheme != 'http' or webapi.hostname != server.hostname or webapi.port != 32315 or
+            relay.hostname != server.hostname or relay.port != 32444):
+        raise ValueError('BBSC lab endpoints must all point at the same isolated 32313/32315/32443/32444 host')
+    lab = Path(os.environ.get('BBSC_LAB_COMPONENT_DIR') or (Path(runtime) / 'bbsc')).resolve()
+    launcher, dll = lab / 'bbsc-launch.exe', lab / 'bbsc.dll'
+    for name, digest in BBSC_LAB_HASHES.items():
+        path = lab / name
+        if not path.is_file():
+            raise FileNotFoundError(f'BBSC lab file missing: {path}; import the complete official BBport ZIP')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f'BBSC lab component does not match official BBport v0.0.1_hotfix_2: {path}')
+    os.environ['SHADPS4_BLOODBORNE_SEAMLESS_COOP'] = '0'  # BBSC DLL owns the game hooks.
+    # The upstream test mod enables these by default. Do not alter the guest's
+    # progression or publish play status on Discord during an unproven lab test.
+    os.environ.setdefault('SHADPS4_BBSC_SHARED_PROGRESS', '0')
+    os.environ.setdefault('SHADPS4_BBSC_DISCORD', '0')
+    print(f'BBSC experimental mod: {dll} sha256={BBSC_LAB_HASHES[dll.name]} (isolated test server and saves only)')
+    return [launcher, '--emu', probe, '--dll', dll, '--cwd', ROOT, *command[1:]]
+
+
+def bbsc_lab_report(runtime, started_at):
+    """Expose the DLL's own log even when its injector does not inherit stdout."""
+    lab = Path(os.environ.get('BBSC_LAB_COMPONENT_DIR') or (Path(runtime) / 'bbsc')).resolve()
+    logs = lab / 'logs'
+    try:
+        recent = [path for path in logs.glob('bbsc-mod-*.log')
+                  if path.stat().st_mtime >= started_at - 2]
+        if not recent:
+            print(f'BBSC mod log not found in {logs}; hook initialization is unconfirmed', file=sys.stderr)
+            return
+        latest = max(recent, key=lambda path: path.stat().st_mtime)
+        print(f'BBSC mod log: {latest}')
+        with latest.open(encoding='utf-8', errors='replace') as stream:
+            ready = any('BBSC mod ready' in line for line in stream)
+        if not ready:
+            print('BBSC hook initialization was not confirmed; inspect the mod log', file=sys.stderr)
+    except OSError as error:
+        print(f'BBSC mod log unavailable: {error}', file=sys.stderr)
 
 
 def main():
@@ -436,6 +530,11 @@ def main():
                    '--patches', os.path.join(out, 'patches.bin'), '--app0', merged,
                    '--user', user_dir,
                    '--timeout', env('BB_TIMEOUT', '0'), *arguments]
+        if env('BBSC_LAB_MOD') == '1':
+            # game_check above validates the exact supported image before an
+            # external DLL can be loaded. Apply this after linking/patching so
+            # the BBSC wrapper receives the same bb-probe arguments.
+            command = bbsc_lab_command(command, probe, env('BB_RUNTIME', str(ROOT / 'runtime')))
         if WINDOWS:
             # Packaged builds load their private DLL closure. Development builds use MSYS2's
             # CLANG64 DLLs. System32 is searched before PATH, so vulkan-1.dll still comes from
@@ -445,7 +544,11 @@ def main():
         if os.environ.get('BB_DRY_RUN') == '1':
             describe_dry_run(command, probe)
             return 0
-        return start(command, probe, overlay)
+        started_at = time.time()
+        result = start(command, probe, overlay)
+        if env('BBSC_LAB_MOD') == '1':
+            bbsc_lab_report(env('BB_RUNTIME', str(ROOT / 'runtime')), started_at)
+        return result
     finally:
         if overlay:
             remove_overlay(overlay)

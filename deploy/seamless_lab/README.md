@@ -1,17 +1,24 @@
-# Isolated seamless-matchmaking laboratory
+# Isolated BBSC-compatible seamless laboratory
 
-This is **not yet full seamless co-op**. The existing native client can request
-shadNet's experimental relaxed summon rules, but it cannot yet keep a party
-together through death, lamp travel or area loading. Those require verified
-Bloodborne game-code hooks and save isolation. Do not distribute this as a
-finished seamless mode.
+This is **experimental, not a finished online seamless release**. It pairs an
+independent shadNet matchmaking server with BBSC's game API/relay and an
+optional BBSC game-hook DLL. Without the DLL, it remains relaxed matchmaking
+only. The exact bbport + BBSC combination still needs a two-PC test through
+death, lamp travel, boss clear and reconnect before it can be called seamless.
 
 Run this Compose project only on a test machine. It is independent of
 `deploy/online_remote`: its own named data volume contains a separate account
-database and registration secret. It binds only to loopback on 32313/TCP,
-32314/UDP and 32315/TCP, leaving the production traditional service's
-31313/31314/31315 ports untouched. Never copy the production volume here or
-run `down -v` against production.
+database and registration secret. The separate BBSC game API has its own data
+volume. By default all five lab ports bind only to loopback: 32313/TCP,
+32314/UDP, 32315/TCP, 32443/TCP and 32444/TCP. The production traditional
+service and its 31313/31314/31315 ports are untouched. Never copy production
+volumes here or run `down -v` against production.
+
+The game API image checks out pinned BBSC source revision
+`315f76c38b1ca5843b082f93f47927a9193ad94a` during build; Docker must
+reach GitHub once. If upstream `main` moves, the hash check deliberately
+stops the build until the new source is reviewed. The upstream game API source is GPL-2.0-or-later. This
+project does **not** bundle BBSC DLLs or game files.
 
 After Docker Desktop is running:
 
@@ -19,12 +26,23 @@ After Docker Desktop is running:
 docker compose -f deploy/seamless_lab/compose.yaml config --quiet
 docker compose -f deploy/seamless_lab/compose.yaml up -d --build
 curl.exe http://127.0.0.1:32315/status
+curl.exe http://127.0.0.1:32443/bb-eu/ss.info
 ```
 
 In the launcher, use native LAN mode with server `127.0.0.1:32313`, turn off
 "this PC is the LAN server", and enable the experimental seamless-matching
-checkbox. The launcher derives the WebAPI port as TCP port + 2 and the client
-derives the STUN port as TCP port + 1. Register a **new test account** on this
+checkbox. To test BBSC hooks, download the official
+[`BBSC-0.0.1-BBport.zip`](https://github.com/Classmg22/BBSC/releases/tag/v0.0.1_hotfix_2)
+(SHA-256 `c8e19e72d957d5278f1aec6ea907e75383e6fac3a2060a490ff3e1e913f1ffe8`)
+and use the launcher's **导入 BBSC 官方测试包** button. The launcher verifies the
+archive and all six required files (the two binaries, `LICENSE.txt`, `NOTICE.txt`,
+`SUPPORTERS.txt`, and `mod.json`) before placing them in
+`<installed runtime>/runtime/bbsc/`; it never overwrites different existing
+files. Then enable the separate "实验性 BBSC 游戏补丁" checkbox. A missing or
+modified file fails closed before loading the DLL. Do not put these files in
+the production runtime or enable this checkbox with the public online mode. The launcher points only
+this test launch at the lab's game API and relay. The shadNet WebAPI port is
+TCP port + 2 and STUN is TCP port + 1. Register a **new test account** on this
 isolated server before attempting a bell test. On your own test machine, read
 the generated registration secret with
 `docker compose -f deploy/seamless_lab/compose.yaml exec -T shadnet cat /var/lib/shadnet/registration_secret`
@@ -33,7 +51,45 @@ logs or screenshots. Production credentials are not
 copied. The launcher redirects this mode's game data and automatic backups to
 `<your player-data directory>/seamless-lab` without copying your existing
 character. Start a new test character; never import your only save here.
+For these early tests, the graphical launcher forces BBSC's default
+shared-progress writeback and Discord rich presence off. A developer running
+`scripts/run_game.py` directly can explicitly opt in through the corresponding
+environment variables after taking a separate save backup.
 
-For two PCs or Internet testing, first add a separate, authenticated tailnet
-node and private port bridge for this lab. Do not expose these raw game ports
-to the public Internet, and do not reconfigure the production shadNet service.
+For a two-PC **trusted LAN** test, set both `SEAMLESS_BIND_IP` and
+`SEAMLESS_ADVERTISE_IP` to the server PC's LAN IPv4 before `docker compose up`;
+use that IP with `:32313` in both launchers. Restrict the five lab ports to
+the trusted LAN in the host firewall. For Internet testing, add a separate
+authenticated tailnet bridge to this lab; do not expose the raw game/API/relay
+ports publicly or reconfigure the production shadNet service.
+
+BBSC's published mod and server APIs are the compatibility target, but this
+adapter has not yet been demonstrated in a live two-PC session. Keep the
+traditional online mode as the stable choice until the test matrix passes.
+
+## Local verification on 2026-10-16
+
+- The isolated shadNet `/status` and BBSC `/bb-eu/ss.info` returned HTTP 200.
+  Decoded `ss.info` advertised the lab summon broker at port 32315; the
+  broker route rejected an empty request with HTTP 400, rather than 404.
+- A disposable test account authenticated to the isolated shadNet instance.
+  The upstream BBSC DLL logged a verified game image, 52 written patch sites,
+  159/159 installed hooks, a ready P2P channel, and a connection to the lab
+  relay at port 32444. This verifies initialization, **not** successful co-op.
+- The first game runs exited before play: the unmodified control crashed in
+  `GXRenderThread` with its initial high-memory test defaults. After configuring
+  the isolated test profile for 720p startup rendering (`live_resolution=0`),
+  unmodified bbport stayed running through title initialization and exited
+  cleanly when its window was closed. The official `bbsc-launch.exe --no-mod`
+  wrapper did likewise. A DLL-enabled launch initially returned code 1 because
+  the GUI-subsystem injector was started without explicit standard handles.
+  `scripts/run_game.py` now supplies inherited stdout/stderr pipes and forwards
+  the game log. With this fix, the DLL-enabled game remained running for over
+  a minute, authenticated to the isolated shadNet, sent STUN pings, and exited
+  cleanly on window close. **This verifies a single-client startup only.**
+  No bell pairing, death, travel, boss clear or reconnect has been verified with
+  two PCs; seamless mode is not yet a working player release.
+- The game API image built locally. A fresh shadNet image build was blocked by
+  the local Docker proxy failing to fetch Ubuntu packages, so the lab reused
+  a previously built shadNet image from this machine. This does not establish
+  clean-build reproducibility.

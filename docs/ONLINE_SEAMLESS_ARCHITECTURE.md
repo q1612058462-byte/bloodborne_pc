@@ -30,12 +30,23 @@ provide a persistent session. Do not relabel it as complete seamless play.
 
 1. **Isolation:** keep traditional production on 31313/31314/31315 and its
    current volumes. Use `deploy/seamless_lab` with a separate shadNet process,
-   database and loopback 32313/32314/32315 ports. The launcher now derives
+   database and loopback 32313/32314/32315 ports. A separate pinned BBSC game
+   API/relay container uses 32443/32444 and its own volume. The launcher derives
    WebAPI as base port + 2 and keeps test saves under `seamless-lab/` with
-   automatic backups. This milestone is only relaxed matchmaking.
-2. **Game-side prototype:** gated, byte-validated hooks for summon eligibility,
-   persistent room/peer signaling, death and stage-transition classification.
-   Genuine disconnect/kick paths must still terminate the session.
+   automatic backups.
+2. **Game-side prototype:** an opt-in Windows adapter imports the complete,
+   hash-checked BBSC BBport test package and launches its DLL through
+   `bbsc-launch.exe` after bbport's exact executable hash check. It refuses
+   production endpoints and redirects only lab sessions to the BBSC game
+   API/relay. A local single-client run reached 52 verified patch sites,
+   159/159 installed hooks, shadNet authentication and a connected relay.
+   Explicit inherited stdout/stderr pipes fixed an early code-1 exit from the
+   GUI-subsystem injector. With a 720p low-memory test profile, the DLL-enabled
+   game remained running for over a minute and exited cleanly on window close.
+   **Co-op gameplay is still unverified**: two real PCs must test bell pairing,
+   death, travel, boss clear and reconnect. Keep shared-progress writeback and
+   Discord presence off by default. Genuine disconnect/kick paths must still
+   terminate the session.
 3. **World re-entry:** on lamp/death/area change, coordinate destination,
    reload both worlds and reinsert remote characters; verify host and guest
    both see each other and can fight. No save mutation yet.

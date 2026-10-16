@@ -61,6 +61,7 @@ sealed class LaunchOptions {
     public bool PublicOnline;
     public bool LanHost;
     public bool LanSeamless;
+    public bool BbscLabMod;
     public string LanAddress;
     public string LanNpid;
     public string LanPassword;
@@ -722,7 +723,7 @@ sealed class MainForm : Form {
     bool onlineSetupInProgress, onlineSetupWaitingForNet;
     DateTime onlineSetupDeadlineUtc;
     readonly System.Windows.Forms.Timer onlineSetupTimer = new System.Windows.Forms.Timer();
-    CheckBox lanHost, lanSeamless;
+    CheckBox lanHost, lanSeamless, bbscLabMod;
     Label lanStatus;
     Button lanStartServerButton, lanStopServerButton, lanTestButton, lanRegisterButton;
     Label saveStatus;
@@ -910,6 +911,7 @@ sealed class MainForm : Form {
             string selected = Value(coreMode);
             playButton.Text = selected == "public_online" ? "启动在线联机" :
                 selected == "native_lan" ? "启动局域网联机" : "启动游戏";
+            UpdateLabModeAvailability();
             if (saveRootBox != null) RefreshSaveManager();
         };
         AddSpan(core, Note("“局域网原生联机”连接自己填写的 shadNet；“在线联机”使用安装包内预配置的服务。" +
@@ -1019,6 +1021,14 @@ sealed class MainForm : Form {
         AddRow(lanConnection, "注册邮箱", lanEmailBox, null);
         lanSeamless = Check("实验性无缝匹配（不是完整的跨死亡／传送联机）");
         AddSpan(lanConnection, lanSeamless);
+        lanSeamless.CheckedChanged += delegate { UpdateLabModeAvailability(); };
+        bbscLabMod = Check("实验性 BBSC 游戏补丁（需官方 BBport 测试包）");
+        AddSpan(lanConnection, bbscLabMod);
+        UpdateLabModeAvailability();
+        Button importBbscButton = new Button { Text = "导入 BBSC 官方测试包…", AutoSize = true };
+        importBbscButton.Click += delegate { ImportBbscTestPackage(); };
+        AddSpan(lanConnection, importBbscButton);
+        AddSpan(lanConnection, Note("仅供独立 32313 测试服：先安装运行环境，再从 BBSC 官方 GitHub Release 下载 BBport ZIP 并导入。开启后使用同机 32443 游戏 API 和 32444 中继、独立测试存档。不会改动正式在线联机；启动器不附带第三方 DLL。"));
         AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；独立测试服务可填写 127.0.0.1:32313。不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
         AddSpan(lanConnection, Note("局域网原生模式会登录这里填写的 shadNet 账号。默认连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；指定其他 TCP 端口时，UDP 和 WebAPI 分别使用该端口 +1、+2。联机 ID 与密码须在对应服务器注册。"));
         AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。实验性无缝匹配必须连接独立的测试服务器，不能指向正在服务传统联机的服务器；它尚不支持死亡、灯传送后保持队伍。"));
@@ -1525,6 +1535,7 @@ sealed class MainForm : Form {
         lanSecretBox.Text = savedLanSecret;
         lanHost.Checked = Get(state, "lan_host", "0") == "1";
         lanSeamless.Checked = Get(state, "lan_seamless", "0") == "1";
+        bbscLabMod.Checked = Get(state, "bbsc_lab_mod", "0") == "1";
         onlineNpidBox.Text = Get(state, "online_npid", "");
         onlinePasswordBox.Text = UnprotectSecret(Get(state, "online_password_dpapi", ""));
         onlineNicknameBox.Text = Get(state, "online_nickname", "");
@@ -2838,6 +2849,11 @@ sealed class MainForm : Form {
         gameStatus.ForeColor = warning ? Color.Firebrick : SystemColors.GrayText;
     }
 
+    void UpdateLabModeAvailability() {
+        if (bbscLabMod != null && coreMode != null && lanSeamless != null)
+            bbscLabMod.Enabled = Value(coreMode) == "native_lan" && lanSeamless.Checked;
+    }
+
     LaunchOptions Collect() {
         LaunchOptions options = new LaunchOptions();
         options.Root = Path.GetFullPath(rootBox.Text.Trim().Trim('"'));
@@ -2848,6 +2864,7 @@ sealed class MainForm : Form {
         options.NativeLan = Value(coreMode) == "native_lan" || options.PublicOnline;
         options.LanHost = !options.PublicOnline && lanHost.Checked;
         options.LanSeamless = options.NativeLan && !options.PublicOnline && lanSeamless.Checked;
+        options.BbscLabMod = options.LanSeamless && bbscLabMod.Checked;
         options.LanAddress = options.PublicOnline ?
             (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
             lanAddressBox.Text.Trim();
@@ -2905,7 +2922,16 @@ sealed class MainForm : Form {
         options.Env["BB_TSNET_NODE_IP"] = overlayGame ? embeddedNetIp : "";
         options.Env["BB_TSNET_SERVER_IP"] = overlayGame ? OverlayServerIp() : "";
         options.Env["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] =
-            validOnlineEndpoint && options.LanSeamless ? "1" : "";
+            validOnlineEndpoint && options.LanSeamless && !options.BbscLabMod ? "1" : "";
+        options.Env["BB_SEAMLESS_LAB"] = validOnlineEndpoint && options.LanSeamless ? "1" : "";
+        options.Env["BBSC_LAB_MOD"] = validOnlineEndpoint && options.BbscLabMod ? "1" : "";
+        options.Env["BBSC_LAB_COMPONENT_DIR"] = ""; // Never accept a developer override from the launcher process.
+        options.Env["SHADPS4_BBSC_SHARED_PROGRESS"] = options.BbscLabMod ? "0" : "";
+        options.Env["SHADPS4_BBSC_DISCORD"] = options.BbscLabMod ? "0" : "";
+        options.Env["BB_COMMUNITY_SERVER"] = validOnlineEndpoint && options.BbscLabMod ?
+            "http://" + onlineHost + ":32443" : "";
+        options.Env["BBSC_RELAY"] = validOnlineEndpoint && options.BbscLabMod ?
+            onlineHost + ":32444" : "";
         List<string> enabledCheats = new List<string>();
         foreach (string[] definition in CheatDefinitions)
             if (cheats[definition[0]].Checked) enabledCheats.Add(definition[2]);
@@ -2936,6 +2962,11 @@ sealed class MainForm : Form {
             Path.Combine(root, "out", "bb-probe.exe");
         if (requireInstalled && !File.Exists(requiredCore)) {
             Warn("运行环境尚未安装，请先点击“安装 / 更新运行环境”。"); return false;
+        }
+        if (requireInstalled && !publicOnline && !lanMode && lanSeamless.Checked &&
+            bbscLabMod.Checked && !BbscFilesReady(root)) {
+            Warn("BBSC 实验组件未就绪：请点击“导入 BBSC 官方测试包…”并选择官方 BBport ZIP。正式版不附带此第三方组件。");
+            return false;
         }
         if (requireInstalled && !lanMode) {
             string expected = ExpectedProbeHash();
@@ -2969,6 +3000,11 @@ sealed class MainForm : Form {
             if (!publicOnline && lanSeamless.Checked && (port != 32313 || lanHost.Checked)) {
                 Warn("实验性无缝匹配只能连接独立测试服务的 32313 端口，并须取消“本机同时作为局域网服务器”。\r\n\r\n" +
                      "现有 31313 传统联机服务不能切换成实验模式；跨死亡、传送的完整无缝联机也尚未完成。");
+                return false;
+            }
+            if (!publicOnline && !lanMode && bbscLabMod.Checked &&
+                (!lanSeamless.Checked || port != 32313)) {
+                Warn("BBSC 实验补丁只允许在“原生局域网 + 独立 32313 无缝测试服”使用。请勿连接正式在线服务。");
                 return false;
             }
             if (publicOnline && EffectivePublicPortalUrl().Length == 0) {
@@ -3014,6 +3050,85 @@ sealed class MainForm : Form {
             using (FileStream stream = File.OpenRead(path))
                 return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
         } catch { return ""; }
+    }
+
+    static bool BbscFilesReady(string root) {
+        string folder = Path.Combine(root, "runtime", "bbsc");
+        foreach (string name in new[] { "bbsc-launch.exe", "bbsc.dll", "LICENSE.txt", "NOTICE.txt", "SUPPORTERS.txt", "mod.json" })
+            if (!File.Exists(Path.Combine(folder, name))) return false;
+        return true;
+    }
+
+    void ImportBbscTestPackage() {
+        if (busy || NativeCoreRunning()) { Warn("请先等待当前操作结束并退出游戏，再导入 BBSC 测试包。"); return; }
+        string root;
+        try { root = Path.GetFullPath(rootBox.Text.Trim().Trim('"')); }
+        catch (Exception e) { Warn("运行环境目录无效：" + e.Message); return; }
+        if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe"))) {
+            Warn("请先安装运行环境，再导入 BBSC 测试包。"); return;
+        }
+        using (OpenFileDialog dialog = new OpenFileDialog {
+            Title = "选择 BBSC 官方 BBport 测试包 v0.0.1_hotfix_2",
+            Filter = "BBSC ZIP (*.zip)|*.zip", CheckFileExists = true
+        }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            const string packageHash = "C8E19E72D957D5278F1AEC6EA907E75383E6FAC3A2060A490FF3E1E913F1FFE8";
+            if (!FileSha256(dialog.FileName).Equals(packageHash, StringComparison.OrdinalIgnoreCase)) {
+                Warn("测试包 SHA-256 与已核验的 BBSC-0.0.1-BBport.zip 不一致。请从 BBSC 官方 GitHub Release v0.0.1_hotfix_2 重新下载。");
+                return;
+            }
+            string[] names = { "bbsc-launch.exe", "bbsc.dll", "LICENSE.txt", "NOTICE.txt", "SUPPORTERS.txt", "mod.json" };
+            string[] hashes = {
+                "087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043",
+                "239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445",
+                "8177F97513213526DF2CF6184D8FF986C675AFB514D4E68A404010521B880643",
+                "9919B68F5E5F4F80D2B316C7DAE40C45D0D43CE6274670D67DE655FB11F01F07",
+                "64924B1CF91ED231969BDD5DD0C6DA0F15CA990C2BD65959636612F9316491AA",
+                "8B28FE2AC94CC14ED8640402A28255D2CF32A4864030CB9B8081FD0670727CD4"
+            };
+            try {
+                string folder = Path.Combine(root, "runtime", "bbsc");
+                byte[][] payloads = new byte[names.Length][];
+                using (ZipArchive archive = ZipFile.OpenRead(dialog.FileName)) {
+                    for (int i = 0; i < names.Length; i++) {
+                        ZipArchiveEntry entry = null;
+                        foreach (ZipArchiveEntry item in archive.Entries) {
+                            if (item.FullName.Replace('\\', '/').Equals("bbsc/" + names[i], StringComparison.OrdinalIgnoreCase)) {
+                                entry = item; break;
+                            }
+                        }
+                        if (entry == null || entry.Length > 20 * 1024 * 1024)
+                            throw new InvalidDataException("测试包缺少或包含异常大小的 " + names[i]);
+                        using (Stream input = entry.Open()) using (MemoryStream output = new MemoryStream()) {
+                            input.CopyTo(output);
+                            payloads[i] = output.ToArray();
+                        }
+                        using (SHA256 sha = SHA256.Create()) {
+                            string actual = BitConverter.ToString(sha.ComputeHash(payloads[i])).Replace("-", "");
+                            if (!actual.Equals(hashes[i], StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidDataException(names[i] + " 校验失败");
+                        }
+                        string target = Path.Combine(folder, names[i]);
+                        if (File.Exists(target) && !FileSha256(target).Equals(hashes[i], StringComparison.OrdinalIgnoreCase))
+                            throw new IOException("已有不同版本的 " + target + "；请先自行备份并处理，启动器不会覆盖它。");
+                    }
+                }
+                Directory.CreateDirectory(folder);
+                for (int i = 0; i < names.Length; i++) {
+                    string target = Path.Combine(folder, names[i]);
+                    if (File.Exists(target)) continue;
+                    string temporary = target + ".import-" + Guid.NewGuid().ToString("N");
+                    try {
+                        using (FileStream output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write))
+                            output.Write(payloads[i], 0, payloads[i].Length);
+                        File.Move(temporary, target);
+                    } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                }
+                MessageBox.Show(this, "BBSC 官方测试组件已导入到：\r\n" + folder +
+                    "\r\n\r\n仅用于独立无缝联机实验服。正式传统在线联机不受影响。",
+                    TitleText, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            } catch (Exception e) { Warn("导入 BBSC 测试包失败：" + e.Message); }
+        }
     }
 
     void Warn(string text) { MessageBox.Show(this, text, TitleText, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
@@ -3471,6 +3586,7 @@ sealed class MainForm : Form {
         state["online_application_token_dpapi"] = ProtectSecret(onlineApplicationToken);
         state["lan_host"] = options.LanHost ? "1" : "0";
         state["lan_seamless"] = options.LanSeamless ? "1" : "0";
+        state["bbsc_lab_mod"] = options.BbscLabMod ? "1" : "0";
         state["quality_profile"] = Value(qualityProfile);
         state["fps"] = options.Env["BB_FPS"];
         state["language"] = options.Env["BB_LANGUAGE"];
@@ -3570,6 +3686,10 @@ sealed class MainForm : Form {
     void StartGame() {
         if (!CheckInputs(true)) return;
         LaunchOptions options = Collect();
+        if (options.BbscLabMod && !SaveTools.ReadTitleId(options.Game).Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
+            Warn("BBSC 实验补丁只支持 CUSA03173 v1.09，不允许跳过游戏版本检查。");
+            return;
+        }
         if (options.LanMode || options.NativeLan) {
             string titleId = SaveTools.ReadTitleId(options.Game);
             if (!titleId.Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
