@@ -1,0 +1,29 @@
+name: bbport-seamless-lab
+
+# Deliberately separate from deploy/online_remote: distinct container, database,
+# registration secret and loopback ports. This is a matchmaking experiment, not
+# a complete cross-area/death seamless-co-op implementation.
+services:
+  shadnet:
+    build:
+      context: ../shadnet
+    image: bbport-shadnet:seamless-lab
+    restart: unless-stopped
+    environment:
+      SHADNET_SEAMLESS: "true"
+    ports:
+      - "127.0.0.1:32313:31313/tcp"
+      - "127.0.0.1:32314:31314/udp"
+      - "127.0.0.1:32315:31315/tcp"
+    volumes:
+      - seamless-lab-data:/var/lib/shadnet
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:31315/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  seamless-lab-data:

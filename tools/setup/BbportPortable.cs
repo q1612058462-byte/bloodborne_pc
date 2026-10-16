@@ -1017,11 +1017,11 @@ sealed class MainForm : Form {
         AddRow(lanConnection, "联机密码", lanPasswordBox, null);
         lanEmailBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(lanConnection, "注册邮箱", lanEmailBox, null);
-        lanSeamless = Check("实验性无缝联机（所有玩家和服务端必须同时开启）");
+        lanSeamless = Check("实验性无缝匹配（不是完整的跨死亡／传送联机）");
         AddSpan(lanConnection, lanSeamless);
-        AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
-        AddSpan(lanConnection, Note("局域网原生模式会实际登录这里填写的 shadNet 账号，并连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；联机 ID 与密码必须是该服务器已经注册的账号。"));
-        AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。诊断时可让服务端和所有客户端同时开启实验性无缝联机，以排除区域、等级和距离过滤。"));
+        AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；独立测试服务可填写 127.0.0.1:32313。不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
+        AddSpan(lanConnection, Note("局域网原生模式会登录这里填写的 shadNet 账号。默认连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；指定其他 TCP 端口时，UDP 和 WebAPI 分别使用该端口 +1、+2。联机 ID 与密码须在对应服务器注册。"));
+        AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。实验性无缝匹配必须连接独立的测试服务器，不能指向正在服务传统联机的服务器；它尚不支持死亡、灯传送后保持队伍。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
         TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
@@ -1747,7 +1747,8 @@ sealed class MainForm : Form {
         if (host == "0.0.0.0" || host.Length == 0 || host.IndexOfAny(new char[] { '/', '\\', ' ' }) >= 0)
             return false;
         IPAddress parsedAddress;
-        return IPAddress.TryParse(host, out parsedAddress) || Regex.IsMatch(host, @"^[A-Za-z0-9.-]+$");
+        return port <= 65533 &&
+            (IPAddress.TryParse(host, out parsedAddress) || Regex.IsMatch(host, @"^[A-Za-z0-9.-]+$"));
     }
 
     static JavaScriptSerializer JsonSerializer() {
@@ -1803,7 +1804,7 @@ sealed class MainForm : Form {
         general["connected_to_network"] = true;
         general["shad_net_enabled"] = true;
         general["shadnet_server"] = host + ":" + port;
-        general["shadnet_webapi_server"] = "http://" + host + ":31315";
+        general["shadnet_webapi_server"] = "http://" + host + ":" + (port + 2);
         general["signaling_info"] = "";
         general["enable_upnp"] = false;
         WriteJson(configPath, config);
@@ -1847,7 +1848,7 @@ sealed class MainForm : Form {
         Dictionary<string, object> overrides = new Dictionary<string, object>();
         overrides["https://ss4.scej-network.jp:20443"] = "http://thehuntersdream.com";
         overrides["http://thehuntersdream.com:18671/summon_messenger"] =
-            "http://" + host + ":31315";
+            "http://" + host + ":" + (port + 2);
         WriteJson(Path.Combine(portableUser, "host_overrides.json"), overrides);
         Log("shadp2p 客户端配置已写入：" + portableUser);
     }
@@ -1957,6 +1958,10 @@ sealed class MainForm : Form {
 
     void StartLanServerFromUi() {
         try {
+            if (lanSeamless.Checked) {
+                Warn("实验性无缝匹配须使用独立的 32313 测试服务；此按钮会启动 31313 本机服务，不能用于无缝测试。");
+                return;
+            }
             LaunchOptions options = CollectLanOnly();
             string error = StartLanServerProcess(options);
             if (error != null) { Warn("启动 shadNet 失败：" + error); return; }
@@ -1994,19 +1999,20 @@ sealed class MainForm : Form {
 
     static bool CheckLanStatus(string address, out string message) {
         string host;
-        int ignoredPort;
-        if (!TryParseLanEndpoint(address, out host, out ignoredPort)) {
+        int port;
+        if (!TryParseLanEndpoint(address, out host, out port)) {
             message = "服务器地址无效。"; return false;
         }
         try {
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://" + host + ":31315/status");
+            string endpoint = host + ":" + (port + 2);
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://" + endpoint + "/status");
             request.Timeout = 4000;
             request.ReadWriteTimeout = 4000;
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
                 string body = reader.ReadToEnd();
                 bool ok = response.StatusCode == HttpStatusCode.OK && body.IndexOf("\"ok\":true", StringComparison.OrdinalIgnoreCase) >= 0;
-                message = ok ? "服务器在线：" + host + ":31315" : "服务器响应异常：" + body;
+                message = ok ? "服务器在线：" + endpoint : "服务器响应异常：" + body;
                 return ok;
             }
         } catch (Exception e) { message = "无法连接服务器：" + e.Message; return false; }
@@ -2841,7 +2847,7 @@ sealed class MainForm : Form {
         options.PublicOnline = Value(coreMode) == "public_online";
         options.NativeLan = Value(coreMode) == "native_lan" || options.PublicOnline;
         options.LanHost = !options.PublicOnline && lanHost.Checked;
-        options.LanSeamless = !options.PublicOnline && lanSeamless.Checked;
+        options.LanSeamless = options.NativeLan && !options.PublicOnline && lanSeamless.Checked;
         options.LanAddress = options.PublicOnline ?
             (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
             lanAddressBox.Text.Trim();
@@ -2888,7 +2894,8 @@ sealed class MainForm : Form {
         options.Env["BB_NETWORK_MODE"] = "";
         options.Env["BB_ONLINE"] = validOnlineEndpoint ? "1" : "";
         options.Env["BB_SHADNET_SERVER"] = validOnlineEndpoint ? onlineHost + ":" + onlinePort : "";
-        options.Env["BB_SHADNET_WEBAPI"] = validOnlineEndpoint ? "http://" + onlineHost + ":31315" : "";
+        options.Env["BB_SHADNET_WEBAPI"] = validOnlineEndpoint ?
+            "http://" + onlineHost + ":" + (onlinePort + 2) : "";
         options.Env["BB_SHADNET_NPID"] = validOnlineEndpoint ? options.LanNpid : "";
         options.Env["BB_SHADNET_PASSWORD"] = validOnlineEndpoint ? options.LanPassword : "";
         options.Env["BB_UPNP"] = validOnlineEndpoint ? "0" : "";
@@ -2958,6 +2965,11 @@ sealed class MainForm : Form {
             if (!TryParseLanEndpoint(address, out host, out port)) {
                 Warn(publicOnline ? "公共在线服务尚未配置，当前安装包暂不能使用在线联机。" :
                     "shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
+            }
+            if (!publicOnline && lanSeamless.Checked && (port != 32313 || lanHost.Checked)) {
+                Warn("实验性无缝匹配只能连接独立测试服务的 32313 端口，并须取消“本机同时作为局域网服务器”。\r\n\r\n" +
+                     "现有 31313 传统联机服务不能切换成实验模式；跨死亡、传送的完整无缝联机也尚未完成。");
+                return false;
             }
             if (publicOnline && EffectivePublicPortalUrl().Length == 0) {
                 Warn("公共在线账号服务尚未配置，当前安装包暂不能使用在线联机。"); return false;
@@ -3569,8 +3581,17 @@ sealed class MainForm : Form {
             }
         }
         try {
-            if (!options.LanMode) MigrateLegacySaveIfNeeded(options);
+            if (!options.LanMode && !options.LanSeamless) MigrateLegacySaveIfNeeded(options);
             Configure(options, false);
+            if (options.LanSeamless) {
+                // Keep the experimental game session away from the existing
+                // traditional/single-player save. Persist the user's selected
+                // base path above, then redirect only this launch and backups.
+                options.SaveRoot = Path.Combine(options.SaveRoot, "seamless-lab");
+                options.AutoBackup = true;
+                ConfigureAddons(options);
+                Log("实验性无缝匹配使用独立测试存档：" + options.SaveRoot);
+            }
         }
         catch (Exception e) { Warn("保存设置失败：" + e.Message); return; }
         currentRunPublic = options.PublicOnline;
