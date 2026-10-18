@@ -19,10 +19,11 @@ provide a persistent session. Do not relabel it as complete seamless play.
   it as a behavioral/design reference; do not paste its code into this
   GPL-2.0 codebase without a deliberate license migration.
 - BBSC uses the shadp2p/shadNet protocol family and adds Bloodborne-specific
-  hooks plus a game-server relay. Its source repository declares
-  GPL-2.0-or-later, but the Nexus download page separately restricts asset
-  redistribution and modification. Refer to the public source and obtain
-  clear distribution terms before bundling any BBSC assets or binaries.
+  hooks plus a game-server relay. The verified GitHub BBport release includes
+  GPL-2.0-or-later LICENSE/NOTICE and a source-code offer. The v1.7.12 offline
+  experiment bundles only its unmodified GitHub BBport binaries plus those
+  notices and credits; it does not bundle the separate Nexus-hosted file.
+  Confirm any separate Nexus asset permissions before using those assets.
 - Both references are version-sensitive. Target only the verified
   CUSA03173 v1.09 executable; reject unknown code bytes before patching.
 
@@ -32,10 +33,13 @@ provide a persistent session. Do not relabel it as complete seamless play.
    current volumes. Use `deploy/seamless_lab` with a separate shadNet process,
    database and loopback 32313/32314/32315 ports. A separate pinned BBSC game
    API/relay container uses 32443/32444 and its own volume. The launcher derives
-   WebAPI as base port + 2 and keeps test saves under `seamless-lab/` with
-   automatic backups.
-2. **Game-side prototype:** an opt-in Windows adapter imports the complete,
-   hash-checked BBSC BBport test package and launches its DLL through
+   WebAPI as base port + 2. Game saves use the configured player-data directory
+   shared with ordinary native play; experimental sessions force automatic
+   backups before and after launch. Existing `seamless-lab/` data is preserved
+   but not selected or merged automatically.
+2. **Game-side prototype:** an opt-in Windows adapter uses the complete,
+   hash-checked BBSC BBport test package (bundled in the v1.7.12 offline
+   build, manually importable in earlier builds) and launches its DLL through
    `bbsc-launch.exe` after bbport's exact executable hash check. It refuses
    production endpoints and redirects only lab sessions to the BBSC game
    API/relay. A local single-client run reached 52 verified patch sites,
@@ -50,12 +54,25 @@ provide a persistent session. Do not relabel it as complete seamless play.
 3. **World re-entry:** on lamp/death/area change, coordinate destination,
    reload both worlds and reinsert remote characters; verify host and guest
    both see each other and can fight. No save mutation yet.
-4. **Save-safe progression:** separate test saves and automatic backups before
-   changing boss, lamp, shortcut or item state. Add idempotent sync and
-   rollback/recovery tests, then real two-PC tests over Headscale.
-5. **Online beta:** only after local and two-PC tests, give the seamless service
-   its own tailnet node, enrollment path and client mode. Production remains
-   traditional and its public 80/443 portal stays unchanged.
+4. **Save-safe progression:** the lab uses the configured native player-data
+   directory, with forced automatic backups before and after each test run.
+   Keep an extra manual copy before changing boss, lamp, shortcut or item
+   state. Add idempotent sync and rollback/recovery tests, then real two-PC
+   tests over Headscale.
+5. **Online beta foundation:** the seamless service now has an optional,
+   separately persisted tailnet server node. Its bridge publishes only the
+   existing ACL's port set on that separate node and forwards it to the local
+   32313-32444 lab ports. It authenticates the same `BBST` STUN-source envelope
+   used by traditional online play. A package-level `seamless_overlay_server`
+   selects this node and `127.0.0.3` only when the user enables isolated
+   seamless mode; the existing `overlay_server`, `127.0.0.2` traditional
+   proxies, Docker volumes, ACL and client P2P port remain unchanged. Windows
+   first-time server enrollment
+   reuses the registered launcher's DPAPI-protected application credential and
+   the existing `/v1/device-key` endpoint; it does not introduce a second player
+   registration system or expose the Headscale administrator key. Treat this as
+   transport plumbing, not a completed beta: a two-PC gameplay test is still
+   required before release.
 
 ## Release gates
 

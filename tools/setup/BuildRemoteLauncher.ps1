@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string] $OverlayServerIp
+    [string] $OverlayServerIp,
+    [string] $SeamlessOverlayServerIp = '',
+    [string] $PayloadZip = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,8 +16,24 @@ $octets = $address.GetAddressBytes()
 if ($octets[0] -ne 100 -or $octets[1] -lt 64 -or $octets[1] -gt 127) {
     throw 'OverlayServerIp must be in the Headscale 100.64.0.0/10 range.'
 }
+if ($SeamlessOverlayServerIp) {
+    $seamlessAddress = $null
+    if (-not [System.Net.IPAddress]::TryParse($SeamlessOverlayServerIp, [ref]$seamlessAddress) -or
+        $seamlessAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        throw 'SeamlessOverlayServerIp must be an IPv4 address.'
+    }
+    $seamlessOctets = $seamlessAddress.GetAddressBytes()
+    if ($seamlessOctets[0] -ne 100 -or $seamlessOctets[1] -lt 64 -or $seamlessOctets[1] -gt 127) {
+        throw 'SeamlessOverlayServerIp must be in the Headscale 100.64.0.0/10 range.'
+    }
+    if ($seamlessAddress.Equals($address)) {
+        throw 'SeamlessOverlayServerIp must use a separate server node from OverlayServerIp.'
+    }
+}
 
-$sourceZip = Join-Path $root 'packaging\windows-portable-payload.zip'
+$sourceZip = if ($PayloadZip) { [IO.Path]::GetFullPath($PayloadZip) } else {
+    Join-Path $root 'packaging\windows-portable-payload.zip'
+}
 $dist = Join-Path $root 'dist'
 $version = [IO.File]::ReadAllText((Join-Path $root 'packaging\APP_VERSION.txt')).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid package version: $version" }
@@ -50,10 +68,11 @@ server=127.0.0.2:31313
 portal=https://82.157.168.20
 control=https://82.157.168.20
 overlay_server=$OverlayServerIp
+seamless_overlay_server=$SeamlessOverlayServerIp
 "@
     Set-ZipText $zip 'ONLINE_SERVICE.txt' ($data + "`n")
     Set-ZipText $zip 'APP_VERSION.txt' ($version + "`n")
-    Set-ZipText $zip 'RELEASE_NOTES_zh-CN.txt' ([IO.File]::ReadAllText((Join-Path $root 'packaging\RELEASE_NOTES_zh-CN.txt')))
+    Set-ZipText $zip 'RELEASE_NOTES_zh-CN.txt' ([IO.File]::ReadAllText((Join-Path $root 'packaging\RELEASE_NOTES_PLAYER_zh-CN.txt')))
 }
 finally { $zip.Dispose() }
 

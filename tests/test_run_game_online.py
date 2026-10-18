@@ -1,6 +1,7 @@
 import json
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -90,6 +91,76 @@ class OnlineOverridesTests(unittest.TestCase):
                 self.assertEqual(os.environ['SHADPS4_BBSC_SHARED_PROGRESS'], '0')
                 self.assertEqual(os.environ['SHADPS4_BBSC_DISCORD'], '0')
 
+    def test_bbsc_wrapper_accepts_managed_overlay_endpoints(self):
+        with self.temporary_directory() as directory:
+            root = Path(directory)
+            lab = root / 'bbsc'
+            lab.mkdir()
+            for name in run_game.BBSC_LAB_HASHES:
+                (lab / name).touch()
+            command = [Path('C:/game/bb-probe.exe'), 'boot-linked.bin']
+            values = {'BBSC_LAB_MOD': '1', 'BB_SEAMLESS_LAB': '1', 'BB_ONLINE': '1',
+                      'BB_SHADNET_SERVER': '127.0.0.3:31313',
+                      'BB_SHADNET_WEBAPI': 'http://127.0.0.3:31315',
+                      'BB_COMMUNITY_SERVER': 'http://127.0.0.3:32443',
+                      'BBSC_RELAY': '127.0.0.3:32444'}
+            empty_hash = hashlib.sha256(b'').hexdigest()
+            fake_hashes = {name: empty_hash for name in run_game.BBSC_LAB_HASHES}
+            with mock.patch.object(run_game, 'WINDOWS', True), mock.patch.dict(os.environ, values), \
+                    mock.patch.dict(run_game.BBSC_LAB_HASHES, fake_hashes):
+                result = run_game.bbsc_lab_command(command, command[0], root)
+            self.assertEqual(result[0], lab / 'bbsc-launch.exe')
+
+    def test_bbsc_wrapper_rejects_unmanaged_31313_endpoint(self):
+        values = {'BBSC_LAB_MOD': '1', 'BB_SEAMLESS_LAB': '1', 'BB_ONLINE': '1',
+                  'BB_SHADNET_SERVER': '192.168.31.226:31313',
+                  'BB_SHADNET_WEBAPI': 'http://192.168.31.226:31315',
+                  'BB_COMMUNITY_SERVER': 'http://192.168.31.226:32443',
+                  'BBSC_RELAY': '192.168.31.226:32444'}
+        with mock.patch.object(run_game, 'WINDOWS', True), mock.patch.dict(os.environ, values):
+            with self.assertRaisesRegex(ValueError, 'managed 127.0.0.3'):
+                run_game.bbsc_lab_command(['probe'], 'probe', 'runtime')
+
+    def test_bbsc_backup_uses_save_title_not_game_title(self):
+        with self.temporary_directory() as directory:
+            root = Path(directory)
+            game = root / 'game'
+            (game / 'sce_sys').mkdir(parents=True)
+            (game / 'sce_sys' / 'param.sfo').write_bytes(b'sfo fixture')
+            user = root / 'player'
+            expected = user / 'savedata' / '1' / 'CUSA01363'
+            expected.mkdir(parents=True)
+            with mock.patch('prepare.sfo', return_value={
+                    'INSTALL_DIR_SAVEDATA': 'CUSA01363', 'TITLE_ID': 'CUSA03023'}), \
+                    mock.patch.dict(os.environ, {}):
+                self.assertEqual(run_game.configure_bbsc_save_dir(user, game), expected)
+                self.assertEqual(os.environ['BBSC_SAVE_DIR'], str(expected))
+
+    def test_bbsc_backup_path_is_available_before_first_save(self):
+        with self.temporary_directory() as directory:
+            root = Path(directory)
+            game = root / 'game'
+            (game / 'sce_sys').mkdir(parents=True)
+            (game / 'sce_sys' / 'param.sfo').write_bytes(b'sfo fixture')
+            user = root / 'player'
+            with mock.patch('prepare.sfo', return_value={'TITLE_ID': 'CUSA03173'}), \
+                    mock.patch.dict(os.environ, {}):
+                result = run_game.configure_bbsc_save_dir(user, game)
+                self.assertEqual(result, user / 'savedata' / '1' / 'CUSA03173')
+                self.assertFalse(result.exists())  # Never create an empty "backup" source.
+                self.assertEqual(os.environ['BBSC_SAVE_DIR'], str(result))
+
+    def test_bbsc_backup_rejects_invalid_title(self):
+        with self.temporary_directory() as directory:
+            game = Path(directory) / 'game'
+            (game / 'sce_sys').mkdir(parents=True)
+            (game / 'sce_sys' / 'param.sfo').write_bytes(b'sfo fixture')
+            with mock.patch('prepare.sfo', return_value={'INSTALL_DIR_SAVEDATA': '../other'}), \
+                    mock.patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'no valid Bloodborne save title ID'):
+                    run_game.configure_bbsc_save_dir(Path(directory) / 'player', game)
+                self.assertNotIn('BBSC_SAVE_DIR', os.environ)
+
     def test_bbsc_wrapper_rejects_modified_binary(self):
         with self.temporary_directory() as directory:
             lab = Path(directory) / 'bbsc'
@@ -144,11 +215,24 @@ class OnlineOverridesTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     run_game.bbsc_lab_command(['probe'], 'probe', 'runtime')
 
-    def test_bbsc_lab_rejects_custom_routes(self):
+    def test_bbsc_lab_keeps_ordinary_and_custom_routes_untouched(self):
         with self.temporary_directory() as directory:
-            (Path(directory) / 'host_overrides.custom.json').write_text('{}', encoding='utf-8')
-            with self.assertRaises(ValueError):
-                run_game.online_overrides({'BBSC_LAB_MOD': '1'}, Path(directory))
+            root = Path(directory)
+            custom = root / 'host_overrides.custom.json'
+            ordinary = root / 'host_overrides.json'
+            custom.write_text('{"custom":true}\n', encoding='utf-8')
+            ordinary.write_text('{"ordinary":true}\n', encoding='utf-8')
+            environment = {'BBSC_LAB_MOD': '1',
+                           'BB_COMMUNITY_SERVER': 'http://192.168.31.226:32443',
+                           'BB_SHADNET_WEBAPI': 'http://192.168.31.226:32315'}
+            with mock.patch.object(run_game, 'summon_service', return_value=True):
+                run_game.online_overrides(environment, root)
+            lab = root / 'host_overrides.bbsc.json'
+            self.assertEqual(Path(environment['SHADPS4_HTTP_HOST_OVERRIDES_JSON']), lab)
+            self.assertEqual(custom.read_text(encoding='utf-8'), '{"custom":true}\n')
+            self.assertEqual(ordinary.read_text(encoding='utf-8'), '{"ordinary":true}\n')
+            routes = json.loads(lab.read_text(encoding='utf-8'))
+            self.assertEqual(routes[run_game.GAME_SERVER], environment['BB_COMMUNITY_SERVER'])
 
 
 if __name__ == '__main__':

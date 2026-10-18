@@ -1,6 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Root
+    [string]$Root,
+    [string]$OutputDirectory = '',
+    [string]$BbscPackage = '',
+    [string]$BbscDirectory = '',
+    [string]$EmbeddedNetExe = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,8 +16,9 @@ trap {
 }
 $rootPath = [IO.Path]::GetFullPath($Root)
 $packaging = Join-Path $rootPath 'packaging'
-$stage = Join-Path $packaging 'windows-portable-payload'
-$archive = Join-Path $packaging 'windows-portable-payload.zip'
+$outputRoot = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { $packaging }
+$stage = Join-Path $outputRoot 'windows-portable-payload'
+$archive = Join-Path $outputRoot 'windows-portable-payload.zip'
 
 function Copy-RequiredFile([string]$Source, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
@@ -47,8 +52,15 @@ function Copy-RequiredTree([string]$Source, [string]$Destination, [string[]]$Exc
 }
 
 New-Item -ItemType Directory -Force -Path $packaging | Out-Null
-if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+if ($OutputDirectory) {
+    if (Test-Path -LiteralPath $stage) { throw "Output staging directory already exists: $stage" }
+    if (Test-Path -LiteralPath $archive) { throw "Output archive already exists: $archive" }
+    New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+}
+else {
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+}
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 Copy-RequiredFile (Join-Path $rootPath 'out\bb-probe.exe') (Join-Path $stage 'out\bb-probe.exe')
@@ -59,7 +71,61 @@ Copy-RequiredTree (Join-Path $rootPath 'fsr4_shaders') (Join-Path $stage 'fsr4_s
 if (Test-Path -LiteralPath (Join-Path $rootPath 'fsr4_411') -PathType Container) {
     Copy-RequiredTree (Join-Path $rootPath 'fsr4_411') (Join-Path $stage 'fsr4_411')
 }
-Copy-RequiredTree (Join-Path $rootPath 'runtime') (Join-Path $stage 'runtime')
+# Never pick up a developer's manually installed BBSC files by accident.
+# An offline bundle must use the exact pinned official BBport release below.
+Copy-RequiredTree (Join-Path $rootPath 'runtime') (Join-Path $stage 'runtime') @('bbsc')
+if ($BbscPackage -and $BbscDirectory) { throw 'Choose either BbscPackage or BbscDirectory, not both.' }
+if ($BbscPackage) {
+    $bbscPath = [IO.Path]::GetFullPath($BbscPackage)
+    if (-not (Test-Path -LiteralPath $bbscPath -PathType Leaf)) { throw "Missing BBSC package: $bbscPath" }
+    $expectedBbscHash = 'C8E19E72D957D5278F1AEC6EA907E75383E6FAC3A2060A490FF3E1E913F1FFE8'
+    $actualBbscHash = (Get-FileHash -LiteralPath $bbscPath -Algorithm SHA256).Hash
+    if ($actualBbscHash -ne $expectedBbscHash) {
+        throw "BBSC package hash mismatch: $bbscPath"
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $bbscArchive = [IO.Compression.ZipFile]::OpenRead($bbscPath)
+    try {
+        $bbscFiles = @('bbsc-launch.exe', 'bbsc.dll', 'LICENSE.txt', 'NOTICE.txt', 'SUPPORTERS.txt', 'mod.json')
+        foreach ($name in $bbscFiles) {
+            $entryName = 'bbsc/' + $name
+            $entry = $bbscArchive.Entries | Where-Object { $_.FullName.Replace('\', '/') -ceq $entryName } | Select-Object -First 1
+            if ($null -eq $entry -or $entry.Length -gt 20MB) { throw "BBSC package missing or invalid: $entryName" }
+            $destination = Join-Path $stage ('runtime\bbsc\' + $name)
+            $parent = Split-Path -Parent $destination
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination)
+        }
+        $credits = $bbscArchive.Entries | Where-Object { $_.FullName -ceq 'CREDITS.txt' } | Select-Object -First 1
+        if ($null -eq $credits) { throw 'BBSC package missing CREDITS.txt' }
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($credits, (Join-Path $stage 'runtime\bbsc\CREDITS.txt'))
+    }
+    finally { $bbscArchive.Dispose() }
+    Copy-RequiredFile (Join-Path $packaging 'BBSC_THIRD_PARTY.txt') (Join-Path $stage 'runtime\bbsc\SOURCE_AND_LICENSE.txt')
+}
+if ($BbscDirectory) {
+    # A previously installed offline bundle is also an acceptable source, but
+    # only when every pinned upstream component matches byte-for-byte.
+    $bbscRoot = [IO.Path]::GetFullPath($BbscDirectory)
+    $expected = @{
+        'bbsc-launch.exe' = '087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043'
+        'bbsc.dll' = '239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445'
+        'LICENSE.txt' = '8177F97513213526DF2CF6184D8FF986C675AFB514D4E68A404010521B880643'
+        'NOTICE.txt' = '9919B68F5E5F4F80D2B316C7DAE40C45D0D43CE6274670D67DE655FB11F01F07'
+        'SUPPORTERS.txt' = '64924B1CF91ED231969BDD5DD0C6DA0F15CA990C2BD65959636612F9316491AA'
+        'mod.json' = '8B28FE2AC94CC14ED8640402A28255D2CF32A4864030CB9B8081FD0670727CD4'
+    }
+    foreach ($name in $expected.Keys) {
+        $source = Join-Path $bbscRoot $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected[$name]) {
+            throw "BBSC installed component missing or hash mismatch: $source"
+        }
+        Copy-RequiredFile $source (Join-Path $stage ('runtime\bbsc\' + $name))
+    }
+    Copy-RequiredFile (Join-Path $bbscRoot 'CREDITS.txt') (Join-Path $stage 'runtime\bbsc\CREDITS.txt')
+    Copy-RequiredFile (Join-Path $packaging 'BBSC_THIRD_PARTY.txt') (Join-Path $stage 'runtime\bbsc\SOURCE_AND_LICENSE.txt')
+}
 
 # Keep the Python standard library needed by the launcher. Development-only third-party
 # packages, documentation, tests, Tk and headers are excluded from the player package.
@@ -81,7 +147,10 @@ Get-ChildItem -LiteralPath (Join-Path $rootPath 'scripts') -Filter '*.py' -File 
 }
 Copy-RequiredTree (Join-Path $rootPath 'patches') (Join-Path $stage 'patches')
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'LICENSE-bbport.txt')
-Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\bbport-net.exe') (Join-Path $stage 'net\bbport-net.exe')
+$embeddedNetSource = if ($EmbeddedNetExe) { [IO.Path]::GetFullPath($EmbeddedNetExe) } else {
+    Join-Path $rootPath 'tools\embedded_net\bbport-net.exe'
+}
+Copy-RequiredFile $embeddedNetSource (Join-Path $stage 'net\bbport-net.exe')
 Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\NOTICE.txt') (Join-Path $stage 'licenses\embedded-net-NOTICE.txt')
 Copy-RequiredFile (Join-Path $rootPath 'tools\embedded_net\TAILSCALE_LICENSE.txt') (Join-Path $stage 'licenses\tailscale-BSD-3-Clause.txt')
 
@@ -120,7 +189,7 @@ foreach ($relative in @(
 Copy-RequiredFile (Join-Path $rootPath 'LICENSE') (Join-Path $stage 'shadp2p\server\LICENSE-GPL-2.0.txt')
 Copy-RequiredFile (Join-Path $packaging 'SHADP2P_THIRD_PARTY.txt') (Join-Path $stage 'shadp2p\THIRD_PARTY.txt')
 Copy-RequiredFile (Join-Path $packaging 'APP_VERSION.txt') (Join-Path $stage 'APP_VERSION.txt')
-Copy-RequiredFile (Join-Path $packaging 'RELEASE_NOTES_zh-CN.txt') (Join-Path $stage 'RELEASE_NOTES_zh-CN.txt')
+Copy-RequiredFile (Join-Path $packaging 'RELEASE_NOTES_PLAYER_zh-CN.txt') (Join-Path $stage 'RELEASE_NOTES_zh-CN.txt')
 Copy-RequiredFile (Join-Path $packaging 'ONLINE_SERVICE.txt') (Join-Path $stage 'ONLINE_SERVICE.txt')
 
 $appVersion = [IO.File]::ReadAllText((Join-Path $packaging 'APP_VERSION.txt')).Trim()
@@ -159,6 +228,7 @@ $buildInfo = @(
     'Local feature: bundled userspace tsnet helper for isolated self-hosted Headscale connectivity (experimental)'
     'Linux-port backports: scheduler race fix, time-based texture GC and atomic shader/save writes'
     'Local feature: pre-launch game integrity checks and optional Old Hunters entitlement folder'
+    ('Experimental feature: isolated BBSC seamless co-op lab adapter; original online mode remains available; BBSC offline components bundled: ' + [bool]($BbscPackage -or $BbscDirectory))
     ('bb-probe SHA256: ' + $probeHash)
     ('Packaged at: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
 ) -join "`r`n"

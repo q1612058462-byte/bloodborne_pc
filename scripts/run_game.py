@@ -82,10 +82,12 @@ def online_overrides(environment, user_dir):
     """Write and select the host routes required by Bloodborne's native online bootstrap."""
     user_dir.mkdir(parents=True, exist_ok=True)
     custom = user_dir / 'host_overrides.custom.json'
-    if environment.get('BBSC_LAB_MOD') == '1' and custom.exists():
-        raise ValueError('BBSC lab cannot use host_overrides.custom.json; move it out of the isolated test save')
-    path = custom if custom.exists() else user_dir / 'host_overrides.json'
-    if path != custom:
+    lab = environment.get('BBSC_LAB_MOD') == '1'
+    # The BBSC lab shares the ordinary save directory, but never shares its
+    # routing file. Ignore (do not modify) user custom routes in lab mode.
+    path = (user_dir / 'host_overrides.bbsc.json' if lab else
+            custom if custom.exists() else user_dir / 'host_overrides.json')
+    if lab or path != custom:
         community = (environment.get('BB_COMMUNITY_SERVER') or COMMUNITY_SERVER).rstrip('/')
         if '://' not in community:
             community = 'https://' + community
@@ -340,11 +342,15 @@ def bbsc_lab_command(command, probe, runtime):
     api = urllib.parse.urlsplit(os.environ.get('BB_COMMUNITY_SERVER', ''))
     webapi = urllib.parse.urlsplit(os.environ.get('BB_SHADNET_WEBAPI', ''))
     relay = urllib.parse.urlsplit('//' + os.environ.get('BBSC_RELAY', ''))
-    if (not server.hostname or server.port != 32313 or
+    direct_lab = server.port == 32313 and webapi.port == 32315
+    overlay_lab = (server.hostname == '127.0.0.3' and server.port == 31313 and
+                   webapi.hostname == '127.0.0.3' and webapi.port == 31315)
+    if (not server.hostname or not (direct_lab or overlay_lab) or
             api.scheme != 'http' or api.hostname != server.hostname or api.port != 32443 or
-            webapi.scheme != 'http' or webapi.hostname != server.hostname or webapi.port != 32315 or
+            webapi.scheme != 'http' or webapi.hostname != server.hostname or
             relay.hostname != server.hostname or relay.port != 32444):
-        raise ValueError('BBSC lab endpoints must all point at the same isolated 32313/32315/32443/32444 host')
+        raise ValueError('BBSC lab endpoints must use one isolated host with either direct '
+                         '32313/32315 or managed 127.0.0.3:31313/31315, plus 32443/32444')
     lab = Path(os.environ.get('BBSC_LAB_COMPONENT_DIR') or (Path(runtime) / 'bbsc')).resolve()
     launcher, dll = lab / 'bbsc-launch.exe', lab / 'bbsc.dll'
     for name, digest in BBSC_LAB_HASHES.items():
@@ -358,8 +364,29 @@ def bbsc_lab_command(command, probe, runtime):
     # progression or publish play status on Discord during an unproven lab test.
     os.environ.setdefault('SHADPS4_BBSC_SHARED_PROGRESS', '0')
     os.environ.setdefault('SHADPS4_BBSC_DISCORD', '0')
-    print(f'BBSC experimental mod: {dll} sha256={BBSC_LAB_HASHES[dll.name]} (isolated test server and saves only)')
+    print(f'BBSC experimental mod: {dll} sha256={BBSC_LAB_HASHES[dll.name]} (isolated test server; current player save with backups)')
     return [launcher, '--emu', probe, '--dll', dll, '--cwd', ROOT, *command[1:]]
+
+
+def configure_bbsc_save_dir(user_dir, game_dir):
+    """Point BBSC's pre-grant backup at bbport's actual game save folder.
+
+    BBSC's own fallback only searches shadPS4's CUSA00207 folders. bbport
+    stores this title under the game's INSTALL_DIR_SAVEDATA instead, often
+    CUSA01363 even when TITLE_ID is CUSA03023. Without BBSC_SAVE_DIR the mod
+    refuses to grant its bell kit because it cannot back up the save first.
+    """
+    from prepare import sfo
+
+    metadata = sfo((Path(game_dir) / 'sce_sys' / 'param.sfo').read_bytes())
+    title = metadata.get('INSTALL_DIR_SAVEDATA') or metadata.get('TITLE_ID')
+    if not isinstance(title, str) or not re.fullmatch(r'CUSA\d{5}', title):
+        raise ValueError('BBSC save backup: game has no valid Bloodborne save title ID')
+    save_dir = Path(user_dir).resolve() / 'savedata' / '1' / title
+    os.environ['BBSC_SAVE_DIR'] = str(save_dir)
+    print(f'BBSC save backup source: {save_dir}' +
+          ('' if save_dir.is_dir() else ' (waiting for the game to create its first save)'))
+    return save_dir
 
 
 def bbsc_lab_report(runtime, started_at):
@@ -534,6 +561,7 @@ def main():
             # game_check above validates the exact supported image before an
             # external DLL can be loaded. Apply this after linking/patching so
             # the BBSC wrapper receives the same bb-probe arguments.
+            configure_bbsc_save_dir(user_dir, original)
             command = bbsc_lab_command(command, probe, env('BB_RUNTIME', str(ROOT / 'runtime')))
         if WINDOWS:
             # Packaged builds load their private DLL closure. Development builds use MSYS2's

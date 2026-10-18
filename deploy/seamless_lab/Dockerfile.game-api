@@ -13,4 +13,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && git -C /opt/bbsc checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/bbsc rev-parse HEAD)" = "$BBSC_REF"
 COPY lab_server.py /app/lab_server.py
+COPY lab_region_info.py /opt/bbsc/server/gameserver/lab_region_info.py
 ENTRYPOINT ["python", "/app/lab_server.py"]

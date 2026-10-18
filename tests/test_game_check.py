@@ -77,6 +77,11 @@ class GameCheckTests(unittest.TestCase):
         with mock.patch.object(game_check, 'SUPPORTED_IMAGE', game_check.image_sha256(game)):
             self.assertIsNone(game_check.problem(game))
 
+    def test_supported_image_with_other_sfo_title_passes_without_disabling_hash_check(self):
+        game = self.game('CUSA00207', '01.09')
+        with mock.patch.object(game_check, 'SUPPORTED_IMAGE', game_check.image_sha256(game)):
+            self.assertIsNone(game_check.problem(game))
+
     def test_hash_uses_loaded_virtual_image_not_elf_file_layout(self):
         game = self.game('CUSA03173', '01.09')
         elf, _header, headers, _segments, _missing = parse_self((game / 'eboot.bin').read_bytes())

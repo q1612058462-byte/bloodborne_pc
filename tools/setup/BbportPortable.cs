@@ -569,6 +569,7 @@ sealed class MainForm : Form {
     const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
     static readonly string ReleaseNotes = PayloadText("RELEASE_NOTES_zh-CN.txt").Trim();
+    static readonly bool BundledBbsc = PayloadText("runtime/bbsc/SOURCE_AND_LICENSE.txt").Length != 0;
 
     static readonly Choice[] Resolutions = {
         new Choice("1280 × 720", "1280x720"), new Choice("1920 × 1080", "1920x1080"),
@@ -713,14 +714,20 @@ sealed class MainForm : Form {
     CheckBox autoBackup;
     TextBox lanAddressBox, lanNpidBox, lanPasswordBox, lanEmailBox, lanSecretBox;
     TextBox onlineNpidBox, onlinePasswordBox, onlineQqBox, onlineNicknameBox;
+    TextBox seamlessNpidBox, seamlessPasswordBox, seamlessQqBox, seamlessNicknameBox;
     CheckBox onlineShowInList;
-    Label onlineServiceStatus, onlineCountStatus, onlineLoginStatus, onlineApplicationStatus, onlineSetupStatus,
+    Label onlineServiceStatus, onlineCountStatus, seamlessServiceStatus, seamlessCountStatus,
+        onlineLoginStatus, onlineApplicationStatus, onlineSetupStatus,
         onlineTailscaleStatus, onlineHeadscaleStatus;
-    ListView onlineUsersList;
+    ListView onlineUsersList, seamlessUsersList;
     Button onlineRefreshButton, onlineQuickButton, onlineApplyButton, onlineQueryButton, onlineRegisterButton,
         onlineTailscaleButton, onlineHeadscaleButton;
+    Button onlineManualLaunchButton;
+    Button seamlessQuickButton, seamlessManualLaunchButton, seamlessRefreshButton, lanLaunchButton;
+    Label seamlessSetupStatus, seamlessNetworkStatus, seamlessApplicationStatus, seamlessHeadscaleStatus;
     string onlineApplicationId = "", onlineApplicationToken = "", onlineRegistrationKey = "";
     bool onlineSetupInProgress, onlineSetupWaitingForNet;
+    bool guidedSeamless;
     DateTime onlineSetupDeadlineUtc;
     readonly System.Windows.Forms.Timer onlineSetupTimer = new System.Windows.Forms.Timer();
     CheckBox lanHost, lanSeamless, bbscLabMod;
@@ -863,24 +870,35 @@ sealed class MainForm : Form {
         TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage onlinePage = new TabPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage seamlessPage = new TabPage("在线无缝联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
+        TabPage knownIssuesPage = new TabPage("已知问题") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage helpPage = new TabPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
         logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
         tabs.TabPages.Add(settingsPage);
+        tabs.TabPages.Add(seamlessPage);
         tabs.TabPages.Add(lanPage);
         tabs.TabPages.Add(onlinePage);
         tabs.TabPages.Add(inputPage);
         tabs.TabPages.Add(savePage);
         tabs.TabPages.Add(cheatPage);
         tabs.TabPages.Add(versionPage);
+        tabs.TabPages.Add(knownIssuesPage);
         tabs.TabPages.Add(helpPage);
         tabs.TabPages.Add(logPage);
         tabs.TabPages.Add(shaderPage);
         tabs.SelectedIndexChanged += delegate {
-            if (tabs.SelectedTab == onlinePage) RefreshPublicStatus();
+            if (tabs.SelectedTab == onlinePage) {
+                RefreshPublicStatus();
+                RefreshTailscaleStatus();
+            }
+            if (tabs.SelectedTab == seamlessPage) {
+                RefreshPublicStatus();
+                RefreshTailscaleStatus();
+            }
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
         };
         if (background != null) {
@@ -1010,7 +1028,23 @@ sealed class MainForm : Form {
         lanColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         lanPage.Controls.Add(lanColumn);
 
-        TableLayoutPanel lanConnection = Group("shadNet 联机连接", 2);
+        TableLayoutPanel lanMode = Group("第 1 步：确定谁开服、使用哪种联机", 2);
+        lanHost = Check("这台电脑开设局域网服务器（启动游戏时自动启动）");
+        AddSpan(lanMode, lanHost);
+        AddSpan(lanMode, Note("房主勾选此项；其他玩家不要勾选。所有玩家都连接房主电脑的局域网地址。"));
+        lanSeamless = Check("实验性无缝匹配（需要独立的 BBSC 测试服务器）");
+        AddSpan(lanMode, lanSeamless);
+        lanSeamless.CheckedChanged += delegate { UpdateLabModeAvailability(); };
+        bbscLabMod = Check(BundledBbsc ? "启用 BBSC 游戏补丁（已内置）" : "启用 BBSC 游戏补丁（需先导入官方测试包）");
+        AddSpan(lanMode, bbscLabMod);
+        UpdateLabModeAvailability();
+        Button importBbscButton = new Button { Text = BundledBbsc ? "从官方 ZIP 修复 BBSC 组件…" : "导入 BBSC 官方测试包…", AutoSize = true };
+        importBbscButton.Click += delegate { ImportBbscTestPackage(); };
+        AddSpan(lanMode, importBbscButton);
+        AddSpan(lanMode, Note("普通局域网联机保持上面两个实验选项关闭。使用无缝测试服时同时开启两项，且不要在本机启动普通服务器；异地无缝请优先使用“在线无缝联机”页。"));
+        lanColumn.Controls.Add(lanMode.Parent);
+
+        TableLayoutPanel lanConnection = Group("第 2 步：填写服务器与自己的账号", 2);
         lanAddressBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(lanConnection, "服务器地址", lanAddressBox, null);
         lanNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
@@ -1018,27 +1052,15 @@ sealed class MainForm : Form {
         lanPasswordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
         AddRow(lanConnection, "联机密码", lanPasswordBox, null);
         lanEmailBox = new TextBox { Dock = DockStyle.Fill };
-        AddRow(lanConnection, "注册邮箱", lanEmailBox, null);
-        lanSeamless = Check("实验性无缝匹配（不是完整的跨死亡／传送联机）");
-        AddSpan(lanConnection, lanSeamless);
-        lanSeamless.CheckedChanged += delegate { UpdateLabModeAvailability(); };
-        bbscLabMod = Check("实验性 BBSC 游戏补丁（需官方 BBport 测试包）");
-        AddSpan(lanConnection, bbscLabMod);
-        UpdateLabModeAvailability();
-        Button importBbscButton = new Button { Text = "导入 BBSC 官方测试包…", AutoSize = true };
-        importBbscButton.Click += delegate { ImportBbscTestPackage(); };
-        AddSpan(lanConnection, importBbscButton);
-        AddSpan(lanConnection, Note("仅供独立 32313 测试服：先安装运行环境，再从 BBSC 官方 GitHub Release 下载 BBport ZIP 并导入。开启后使用同机 32443 游戏 API 和 32444 中继、独立测试存档。不会改动正式在线联机；启动器不附带第三方 DLL。"));
-        AddSpan(lanConnection, Note("服务器地址填写开服电脑的局域网 IPv4，例如 192.168.1.20；独立测试服务可填写 127.0.0.1:32313。不要填写 0.0.0.0。传统联机仍按游戏原有区域、钟和 Boss 限制运行。"));
-        AddSpan(lanConnection, Note("局域网原生模式会登录这里填写的 shadNet 账号。默认连接 TCP 31313、UDP 31314 和 WebAPI TCP 31315；指定其他 TCP 端口时，UDP 和 WebAPI 分别使用该端口 +1、+2。联机 ID 与密码须在对应服务器注册。"));
-        AddSpan(lanConnection, Note("传统模式匹配要求：双方游戏内联机密码一致、区域匹配设为全球、位于可联机且相同的区域、主机 Boss 尚未击杀，并满足等级与距离限制。实验性无缝匹配必须连接独立的测试服务器，不能指向正在服务传统联机的服务器；它尚不支持死亡、灯传送后保持队伍。"));
+        AddRow(lanConnection, "注册邮箱（首次注册）", lanEmailBox, null);
+        AddSpan(lanConnection, Note("房主可填 127.0.0.1；其他玩家填房主的局域网 IPv4，例如 192.168.1.20。不要填 0.0.0.0。各自使用不同的联机 ID，密码和邮箱用于在这台服务器注册账号。"));
+        AddSpan(lanConnection, Note("连接独立 BBSC 测试服时填写其地址和端口，例如 192.168.1.20:32313；普通局域网服务器默认使用 31313。"));
         lanColumn.Controls.Add(lanConnection.Parent);
 
-        TableLayoutPanel lanServer = Group("本机 shadNet 服务端", 2);
-        lanHost = Check("本机同时作为局域网服务器（启动游戏时自动启动）");
-        AddSpan(lanServer, lanHost);
+        TableLayoutPanel lanServer = Group("第 3 步：启动服务器、注册并检测", 2);
         lanSecretBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
         AddRow(lanServer, "注册密钥", lanSecretBox, null);
+        AddSpan(lanServer, Note("普通局域网：房主先点“启动本机服务器”；其他玩家无需启动。所有玩家填入房主提供的注册密钥，分别注册自己的 ID，再点“检测服务器”。已有账号可跳过注册。"));
         FlowLayoutPanel lanButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
         lanStartServerButton = new Button { Text = "启动本机服务器", AutoSize = true };
         lanStopServerButton = new Button { Text = "停止本机服务器", AutoSize = true, Enabled = false };
@@ -1053,12 +1075,18 @@ sealed class MainForm : Form {
         AddSpan(lanServer, lanButtons);
         lanStatus = Note("尚未检测服务器。");
         AddSpan(lanServer, lanStatus);
-        AddSpan(lanServer, Note("仅限可信局域网：TCP 31313、UDP 31314、TCP 31315。shadNet 的 TCP 游戏协议本身不加密，请勿在路由器上做公网端口转发。每位玩家必须使用不同的联机 ID。"));
+        AddSpan(lanServer, Note("仅限可信局域网；请勿把游戏端口直接映射到公网。BBSC 测试服由服主单独启动，这里的“启动本机服务器”只启动普通联机服务器。"));
         lanColumn.Controls.Add(lanServer.Parent);
 
-        TableLayoutPanel lanCompatibility = Group("兼容性与存档", 2);
-        AddSpan(lanCompatibility, Note("原生 bbport 在线层移植自 shadp2p/shadNet 的完整协议实现，已测试目标仅为 CUSA03173 1.09。其他区域版本可尝试，但启动器会先警告。"));
-        AddSpan(lanCompatibility, Note("原生联机使用启动器设置的玩家数据目录。旧 shadp2p-home 存档不会删除；如需迁移，请先在“存档管理”备份并验证后导入。"));
+        TableLayoutPanel lanCompatibility = Group("第 4 步：启动游戏并进入匹配", 2);
+        lanLaunchButton = new Button { Text = "选择局域网模式并启动游戏", AutoSize = true };
+        lanLaunchButton.Click += delegate {
+            SelectValue(coreMode, "native_lan");
+            StartGame();
+        };
+        AddSpan(lanCompatibility, Flow(lanLaunchButton));
+        AddSpan(lanCompatibility, Note("普通联机：双方在游戏内使用相同联机密码、将区域设为全球，进入可召唤的同一区域；房主摇大铃，另一人摇小铃。仍需满足 Boss、等级和距离条件。"));
+        AddSpan(lanCompatibility, Note("已验证的游戏版本为 CUSA03173 1.09；其他版本会先提示风险。游戏使用“存档管理”设置的玩家数据目录，无缝实验模式会在启动前后自动备份。"));
         lanColumn.Controls.Add(lanCompatibility.Parent);
 
         TableLayoutPanel onlineColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
@@ -1080,15 +1108,12 @@ sealed class MainForm : Form {
         onlineRefreshButton = new Button { Text = "刷新服务状态", AutoSize = true };
         onlineRefreshButton.Click += delegate { RefreshPublicStatus(); };
         AddSpan(onlineOverview, Flow(onlineRefreshButton));
-        onlineUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(190),
+        onlineUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(130),
             Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
         onlineUsersList.Columns.Add("联机 ID", S(150));
         onlineUsersList.Columns.Add("公开昵称", S(170));
         onlineUsersList.Columns.Add("当前游戏", S(300));
         AddSpan(onlineOverview, onlineUsersList);
-        AddSpan(onlineOverview, Note("在线人数以服务端实际返回为准；服务端尚未提供人数接口时显示“暂不可用”，不会把连通性当作已登录。"));
-        AddSpan(onlineOverview, Note("公开列表只展示同意公开的在线玩家；QQ 号不会出现在列表中。服务器统计包含未公开名单的在线人数。"));
-        onlineColumn.Controls.Add(onlineOverview.Parent);
         TableLayoutPanel onlineAccount = Group("我的在线账号", 2);
         onlineNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
         onlinePasswordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
@@ -1100,16 +1125,90 @@ sealed class MainForm : Form {
         AddRow(onlineAccount, "昵称（申请时填写）", onlineNicknameBox, null);
         onlineShowInList = Check("同意在在线玩家列表中展示我的联机 ID、昵称和当前游戏");
         AddSpan(onlineAccount, onlineShowInList);
+        TableLayoutPanel onlineManual = Group("手动操作（仅一键失败时使用）", 2);
         onlineQuickButton = new Button { Text = "一键准备并启动在线游戏", AutoSize = true,
             Enabled = OverlayServerIp().Length != 0 };
-        onlineQuickButton.Click += delegate { StartGuidedOnline(); };
-        AddSpan(onlineAccount, Flow(onlineQuickButton));
+        onlineQuickButton.Click += delegate { StartGuidedOnline(false); };
+        Button onlineManualToggle = new Button { Text = "遇到问题？展开手动操作", AutoSize = true };
+        onlineManualToggle.Click += delegate {
+            onlineManual.Parent.Visible = !onlineManual.Parent.Visible;
+            onlineManualToggle.Text = onlineManual.Parent.Visible ? "收起手动操作" : "遇到问题？展开手动操作";
+        };
+        AddSpan(onlineAccount, Flow(onlineQuickButton, onlineManualToggle));
         onlineSetupStatus = Note(OverlayServerIp().Length == 0
-            ? "准备状态：此包仅用于本机服务测试；一键在线功能需远端发行包。"
-            : "准备状态：首次填写联机 ID、密码、QQ 和昵称；本机已保存申请凭据时只需 ID 和密码。");
+            ? "准备状态：此包未配置远端在线服务。"
+            : "准备状态：填写账号资料后即可一键启动。");
         AddSpan(onlineAccount, onlineSetupStatus);
-        AddSpan(onlineAccount, Note("启动器会依次检测服务、申请并注册账号、连接内置私网、验证游戏服务，再保存模式并启动游戏。不会跳过游戏内的召唤规则。"));
-        AddSpan(onlineAccount, Note("高级操作（遇到问题时才需要逐步使用）："));
+        onlineColumn.Controls.Add(onlineAccount.Parent);
+        AddSpan(onlineManual, Note("正常情况只需使用上方一键启动。仅当申请、私网或服务检测失败时，按以下步骤逐项排查。"));
+        AddSpan(onlineManual, Note("使用条件：先安装运行环境；每台电脑使用不同联机 ID。首次注册需 QQ 号和昵称；已有账号使用原 ID 与密码。"));
+        AddSpan(onlineManual, Note("按顺序操作：①申请注册码 → ②如待审核则查询进度 → ③填写密码并完成注册 → ④连接内置私网 → ⑤检测到各自的 100.64.x.x 地址后启动。"));
+        onlineColumn.Controls.Add(onlineManual.Parent);
+        onlineManual.Parent.Visible = false;
+        onlineColumn.Controls.Add(onlineOverview.Parent);
+
+        TableLayoutPanel seamlessColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        seamlessColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        seamlessPage.Controls.Add(seamlessColumn);
+        TableLayoutPanel seamlessAccount = Group("在线无缝联机", 2);
+        seamlessNpidBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 16 };
+        seamlessPasswordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+        seamlessQqBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 12 };
+        seamlessNicknameBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 24 };
+        AddRow(seamlessAccount, "联机 ID（NPID）", seamlessNpidBox, null);
+        AddRow(seamlessAccount, "账号密码", seamlessPasswordBox, null);
+        AddRow(seamlessAccount, "QQ 号（首次申请）", seamlessQqBox, null);
+        AddRow(seamlessAccount, "昵称（首次申请）", seamlessNicknameBox, null);
+        BindOnlineAccountBoxes();
+        TableLayoutPanel seamlessManual = Group("手动操作（仅一键失败时使用）", 2);
+        seamlessQuickButton = new Button { Text = "一键检测并启动无缝联机", AutoSize = true,
+            Enabled = SeamlessOverlayServerIp().Length != 0 };
+        seamlessQuickButton.Click += delegate { StartGuidedOnline(true); };
+        Button seamlessManualToggle = new Button { Text = "遇到问题？展开手动操作", AutoSize = true };
+        seamlessManualToggle.Click += delegate {
+            seamlessManual.Parent.Visible = !seamlessManual.Parent.Visible;
+            seamlessManualToggle.Text = seamlessManual.Parent.Visible ? "收起手动操作" : "遇到问题？展开手动操作";
+        };
+        AddSpan(seamlessAccount, Flow(seamlessQuickButton, seamlessManualToggle));
+        seamlessNetworkStatus = Note("内置私网：尚未连接");
+        seamlessSetupStatus = Note("准备状态：首次使用填写 QQ 号和昵称；以后只需联机 ID 与密码。");
+        AddSpan(seamlessAccount, seamlessNetworkStatus);
+        AddSpan(seamlessAccount, seamlessSetupStatus);
+        AddSpan(seamlessAccount, Note("实验性模式：使用现有存档，启动前后自动备份。"));
+        seamlessColumn.Controls.Add(seamlessAccount.Parent);
+        AddSpan(seamlessManual, Note("正常情况只需使用上方一键启动。仅当申请、私网或服务检测失败时，按以下步骤逐项排查。"));
+        AddSpan(seamlessManual, Note("使用条件：已安装含 BBSC 的运行环境；两端使用不同联机 ID。首次申请需 QQ 号和昵称，已有账号可跳过申请与注册。"));
+        AddSpan(seamlessManual, Note("①申请注册码 → ②待审核则查询 → ③完成注册 → ④连接内置私网 → ⑤检测到各自不同的 100.64.x.x 地址 → ⑥手动启动无缝联机。"));
+        seamlessColumn.Controls.Add(seamlessManual.Parent);
+        seamlessManual.Parent.Visible = false;
+        TableLayoutPanel seamlessOverview = Group(PublicServiceIsLoopback() ?
+            "本机测试服务（与普通在线联机共用）" : "公共在线服务（与普通在线联机共用）", 2);
+        if (PublicServiceIsLoopback())
+            AddSpan(seamlessOverview, Note("当前是本机测试包；另一台电脑运行同一个包只会连接它自己，不能用于异地联机。"));
+        seamlessServiceStatus = Note("服务状态：尚未检测");
+        seamlessCountStatus = Note("在线人数：暂不可用");
+        AddSpan(seamlessOverview, seamlessServiceStatus);
+        AddSpan(seamlessOverview, seamlessCountStatus);
+        seamlessRefreshButton = new Button { Text = "刷新服务状态", AutoSize = true };
+        seamlessRefreshButton.Click += delegate { RefreshPublicStatus(); };
+        AddSpan(seamlessOverview, Flow(seamlessRefreshButton));
+        AddSpan(seamlessOverview, Note("下方是共用账号服务的在线人数和自愿公开的玩家；并非无缝房间或当前可加入的世界。无缝游戏服务会在一键启动时另行检测。"));
+        seamlessUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(130),
+            Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
+        seamlessUsersList.Columns.Add("联机 ID", S(150));
+        seamlessUsersList.Columns.Add("公开昵称", S(170));
+        seamlessUsersList.Columns.Add("当前游戏", S(300));
+        AddSpan(seamlessOverview, seamlessUsersList);
+        seamlessColumn.Controls.Add(seamlessOverview.Parent);
+
+        TableLayoutPanel helpColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        helpColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        helpPage.Controls.Add(helpColumn);
+        TableLayoutPanel onlineAdvanced = Group("在线联机：说明与分步排查", 2);
+        AddSpan(onlineAdvanced, Note("一键启动会检查服务、申请并注册账号、连接内置私网和验证游戏服务。传统在线联机仍遵循游戏原有的召唤规则；无缝联机使用独立 BBSC 服务和自动存档备份。"));
+        AddSpan(onlineAdvanced, Note("两个在线联机页都提供“一键失败时展开”的手动流程。若申请直接返回注册码，可跳过查询；已注册账号不需要再次申请。首次设备入网需要本机保存的申请凭据，已授权的本机节点可复用身份重连。"));
         FlowLayoutPanel onlineAccountButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill,
             WrapContents = true };
         onlineApplyButton = new Button { Text = "申请一次性注册码", AutoSize = true };
@@ -1120,34 +1219,70 @@ sealed class MainForm : Form {
         onlineRegisterButton.Click += delegate { RegisterOnlineAccount(); };
         onlineAccountButtons.Controls.AddRange(new Control[] { onlineApplyButton, onlineQueryButton,
             onlineRegisterButton });
-        AddSpan(onlineAccount, onlineAccountButtons);
+        AddSpan(onlineManual, onlineAccountButtons);
         onlineApplicationStatus = Note("申请状态：尚未申请");
-        AddSpan(onlineAccount, onlineApplicationStatus);
-        AddSpan(onlineAccount, Note("本测试服务自动批准有效申请；QQ 号仅用于去重和频率统计，服务器只保存不可逆摘要及末四位，不公开 QQ 原文。切勿与朋友共用联机 ID。"));
-        AddSpan(onlineAccount, Link("打开作者主页，查看互助与账号申请方式", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
-        AddSpan(onlineAccount, Note("交流 QQ 群：945992968（一群，已满）；892729104（二群，可加千人群讨论）。入群问题答案：细雨寒言。"));
-        AddSpan(onlineAccount, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
+        AddSpan(onlineManual, onlineApplicationStatus);
+        AddSpan(onlineAdvanced, Note("本测试服务自动批准有效申请；QQ 号仅用于去重和频率统计，服务器只保存不可逆摘要及末四位，不公开 QQ 原文。切勿与朋友共用联机 ID。"));
+        AddSpan(onlineAdvanced, Link("打开作者主页，查看互助与账号申请方式", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
+        AddSpan(onlineAdvanced, Note("交流 QQ 群：945992968（一群，已满）；892729104（二群，可加千人群讨论）。入群问题答案：细雨寒言。"));
+        AddSpan(onlineAdvanced, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
             (PublicServiceIsLoopback() ? "本机 Docker 测试包不能供异地玩家直接联机。" : "")));
-        onlineColumn.Controls.Add(onlineAccount.Parent);
+        AddSpan(onlineAdvanced, Note("在线人数以服务端实际返回为准；公开列表只展示同意公开的在线玩家，QQ 号不会出现在列表中。"));
         TableLayoutPanel onlineGuide = Group("联机步骤", 2);
-        AddSpan(onlineGuide, Note("1. 在“设置”页选择游戏本体并安装运行环境，两位玩家各用不同联机 ID。\r\n2. 填写账号资料，点击“一键准备并启动在线游戏”；启动器自动检查账号、私网和游戏服务。\r\n3. 游戏内使用相同联机密码，在可联机区域由房主摇召唤钟，另一人摇小共鸣钟。\r\n4. 灰色铃铛通常意味着当前区域或游戏状态不允许召唤。"));
+        AddSpan(onlineGuide, Note("1. 在“设置”页选择游戏本体并安装运行环境，两位玩家各用不同联机 ID。\r\n2. 优先在所选模式页使用一键启动；失败时展开该页的手动操作，按申请、查询、注册、连接私网的顺序排查。\r\n3. 两端私网均显示不同的 100.64.x.x 地址后，在当前模式页手动启动。\r\n4. 传统联机仍需相同游戏内密码及可召唤区域：房主摇大铃，另一人摇小铃。"));
         AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一私网；Headscale 负责设备入网，shadNet 仍负责游戏账号与召唤。只连得上控制服务器而玩家之间不通，仍可能无法召唤。"));
         onlineHeadscaleStatus = Note("自建私网控制服务：尚未检测");
-        AddSpan(onlineGuide, onlineHeadscaleStatus);
+        AddSpan(onlineManual, onlineHeadscaleStatus);
         onlineTailscaleStatus = Note("内置私网：尚未连接（无需安装系统级 Tailscale）");
-        AddSpan(onlineGuide, onlineTailscaleStatus);
+        AddSpan(onlineManual, onlineTailscaleStatus);
         onlineHeadscaleButton = new Button { Text = "连接内置私网", AutoSize = true };
         onlineHeadscaleButton.Click += delegate { ConnectHeadscale(); };
         onlineTailscaleButton = new Button { Text = "检测内置私网", AutoSize = true };
         onlineTailscaleButton.Click += delegate { RefreshTailscaleStatus(); };
-        AddSpan(onlineGuide, Flow(onlineHeadscaleButton, onlineTailscaleButton));
-        AddSpan(onlineGuide, Note("启动器附带独立的 userspace 私网节点，不安装虚拟网卡，也不切换电脑现有的 Tailscale 网络。此测试服务会为已注册账号自动签发一次性设备密钥；不会保存共享入网密钥。真实双机互通仍需验证。"));
-        onlineColumn.Controls.Add(onlineGuide.Parent);
+        AddSpan(onlineManual, Flow(onlineHeadscaleButton, onlineTailscaleButton));
+        onlineManualLaunchButton = new Button { Text = "手动启动传统在线联机", AutoSize = true };
+        onlineManualLaunchButton.Click += delegate {
+            if (!CanStartManualOnline()) return;
+            SelectValue(coreMode, "public_online");
+            StartGame();
+        };
+        AddSpan(onlineManual, Flow(onlineManualLaunchButton));
+        AddSpan(onlineManual, Note("若连接失败，先核对申请状态和私网状态，再到“运行日志”查看错误。"));
 
-        TableLayoutPanel helpColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
-            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-        helpColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        helpPage.Controls.Add(helpColumn);
+        Button seamlessApplyButton = new Button { Text = "申请一次性注册码", AutoSize = true };
+        Button seamlessQueryButton = new Button { Text = "查询申请进度", AutoSize = true };
+        Button seamlessRegisterButton = new Button { Text = "完成账号注册", AutoSize = true };
+        seamlessApplyButton.Click += delegate { ApplyOnlineAccount(); };
+        seamlessQueryButton.Click += delegate { QueryOnlineApplication(); };
+        seamlessRegisterButton.Click += delegate { RegisterOnlineAccount(); };
+        AddSpan(seamlessManual, Flow(seamlessApplyButton, seamlessQueryButton, seamlessRegisterButton));
+        seamlessApplicationStatus = Note("申请状态：尚未申请");
+        AddSpan(seamlessManual, seamlessApplicationStatus);
+        seamlessHeadscaleStatus = Note("自建私网控制服务：尚未检测");
+        AddSpan(seamlessManual, seamlessHeadscaleStatus);
+        Button seamlessConnectButton = new Button { Text = "连接内置私网", AutoSize = true };
+        Button seamlessCheckNetButton = new Button { Text = "检测内置私网", AutoSize = true };
+        seamlessConnectButton.Click += delegate { ConnectHeadscale(); };
+        seamlessCheckNetButton.Click += delegate { RefreshTailscaleStatus(); };
+        AddSpan(seamlessManual, Flow(seamlessConnectButton, seamlessCheckNetButton));
+        seamlessManualLaunchButton = new Button { Text = "手动启动无缝联机", AutoSize = true };
+        seamlessManualLaunchButton.Click += delegate { StartManualSeamless(); };
+        AddSpan(seamlessManual, Flow(seamlessManualLaunchButton));
+        MirrorStatus(onlineApplicationStatus, seamlessApplicationStatus);
+        MirrorStatus(onlineHeadscaleStatus, seamlessHeadscaleStatus);
+        MirrorButtonEnabled(onlineApplyButton, seamlessApplyButton);
+        MirrorButtonEnabled(onlineQueryButton, seamlessQueryButton);
+        MirrorButtonEnabled(onlineRegisterButton, seamlessRegisterButton);
+        MirrorButtonEnabled(onlineHeadscaleButton, seamlessConnectButton);
+        MirrorButtonEnabled(onlineTailscaleButton, seamlessCheckNetButton);
+        AddSpan(onlineGuide, Note("启动器附带独立的 userspace 私网节点，不安装虚拟网卡，也不切换电脑现有的 Tailscale 网络。此测试服务会为已注册账号自动签发一次性设备密钥；不会保存共享入网密钥。"));
+        helpColumn.Controls.Add(onlineAdvanced.Parent);
+        helpColumn.Controls.Add(onlineGuide.Parent);
+        TableLayoutPanel lanGuide = Group("局域网联机：手动设置补充说明", 2);
+        AddSpan(lanGuide, Note("先在“设置”安装运行环境，再按“局域网联机”页的四步操作。普通局域网只需一台房主电脑运行 shadNet，其余电脑填写房主的局域网 IPv4；双方分别注册不同联机 ID。注册密钥由开服者提供，不是游戏内匹配密码。"));
+        AddSpan(lanGuide, Note("普通 shadNet 默认使用 TCP 31313、UDP 31314 和 WebAPI TCP 31315；指定其他 TCP 端口时，后两项为端口 +1、+2。BBSC 无缝实验使用独立 32313 测试服及游戏 API、中继，不可指向普通 31313 服务器；目前死亡或灯传送后不保证保持队伍。"));
+        AddSpan(lanGuide, Note("局域网服务只用于可信网络，不应在路由器上直接开放公网端口。旧 shadp2p-home 存档不会自动删除；需要迁移时，先在“存档管理”备份并验证。"));
+        helpColumn.Controls.Add(lanGuide.Parent);
         TableLayoutPanel helpAbout = Group("关于本项目", 2);
         AddSpan(helpAbout, Note("这是非盈利性质的爱好者项目，不销售游戏、账号或联机资格，也不提供游戏本体。请使用自己合法取得的游戏文件；联机和存档修改仍处于实验阶段，请先备份存档。"));
         AddSpan(helpAbout, Note("启动器整合与维护：哔哩哔哩 细雨寒言。底层 bbport、shadp2p/shadNet 由各自上游作者开发；许可与第三方说明请见安装包内的 LICENSE 文件。"));
@@ -1155,6 +1290,33 @@ sealed class MainForm : Form {
         AddSpan(helpAbout, Link("互帮互助群入口（作者主页）", "https://space.bilibili.com/18955882?spm_id_from=333.1387.0.0"));
         AddSpan(helpAbout, Note("QQ 交流：945992968（一群已满）；892729104（二群，千人群）。入群问题答案是作者昵称：细雨寒言。"));
         helpColumn.Controls.Add(helpAbout.Parent);
+
+        TableLayoutPanel issueColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        issueColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        knownIssuesPage.Controls.Add(issueColumn);
+        TableLayoutPanel issueIntro = Group("使用前请看", 2);
+        AddSpan(issueIntro, Note("整理自玩家反馈与当前版本排查记录。玩家报告是线索，不代表每种配置都能复现；遇到问题请保留完整运行日志和游戏内提示。不要为了排错直接删除存档或关闭整个防火墙。"));
+        issueColumn.Controls.Add(issueIntro.Parent);
+
+        TableLayoutPanel issueInstall = Group("安装与在线联机", 2);
+        AddSpan(issueInstall, Note("首次安装：先在“设置”选择游戏目录和运行环境目录，点击“安装 / 更新运行环境”；安装本身不需要私网 ID、在线账号或连接服务器。安装后到想玩的在线联机页面填写账号，优先使用一键启动。"));
+        AddSpan(issueInstall, Note("显示无法连接服务器：先确认运行环境是当前版本，再用“在线联机”页检查账号、私网和服务。能看到谏言只证明部分在线接口可用，不等于铃铛匹配、玩家互通也已成功。请分别保存双方日志；不要把关闭防火墙当作长期解决办法。"));
+        AddSpan(issueInstall, Note("铃铛灰色或搜不到人：传统联机仍受地图、Boss、人物状态和联机密码等条件影响。两人用不同联机 ID、相同游戏内密码，在可召唤区域先由房主摇大铃，另一人摇小铃；若持续失败，记录双方位置、时间和日志。BBSC 无缝实验模式须使用独立测试服。"));
+        issueColumn.Controls.Add(issueInstall.Parent);
+
+        TableLayoutPanel issueGame = Group("启动、存档与操作", 2);
+        AddSpan(issueGame, Note("返回代码 1 或游戏版本不兼容：查看“运行日志”中第一条明确错误，核对游戏文件是否完整、是否为受支持的 v1.09 可执行映像。CUSA 显示标记与实际存档 ID 可以不同；不能只改标记来绕过可执行文件校验。"));
+        AddSpan(issueGame, Note("返回代码 139、游玩或传送后闪退：139 是崩溃结果，不是单一病因。先看崩溃详情和完整日志；可尝试降低分辨率、材质和帧率，暂时关闭 FSR 等升频项，并保证足够系统内存与分页文件。更改画质或缓存前先备份存档；个别玩家关闭 FSR 后改善，但不是通用修复。"));
+        AddSpan(issueGame, Note("遇到复杂代码报错或反复启动失败：先退出游戏并备份存档，再尝试清理“存档管理”所选玩家数据目录下的 cache 文件夹。若仍异常，可把 %APPDATA%\\shadPS4 文件夹改名暂存后重启，让程序重新生成配置和缓存。该文件夹可能包含旧版配置或存档，请勿未经备份直接删除整个目录；不确定时先提供日志。"));
+        AddSpan(issueGame, Note("画质和显存：即使使用高端显卡，也建议先选中等画质，观察游玩时显存占用，尽量保持在约 10 GB 以内；稳定后再逐步提高分辨率和画质。高画质、升频及高帧率同时开启可能增加崩溃风险，显存建议不是硬性兼容上限。"));
+        AddSpan(issueGame, Note("语言、手柄或键鼠操作异常：先检查游戏内 System/语言设置和启动器“输入与手柄”的按键映射。切换启动器版本后建议重新安装／更新运行环境到新目录；旧核心可能不包含新映射功能。"));
+        issueColumn.Controls.Add(issueGame.Parent);
+
+        TableLayoutPanel issueScenes = Group("过场与 DLC", 2);
+        AddSpan(issueScenes, Note("击败蜘蛛后过场黑屏、路德维希阶段动画卡住：先把帧率设为 30 再从进入过场前的存档重试。已有玩家反馈 30 帧缓解蜘蛛过场；若仍失败，记录地图、帧率、升频方式与日志，切勿反复覆盖唯一存档。"));
+        AddSpan(issueScenes, Note("DLC 入口无法触发或出现穿模：先确认《老猎人》授权与关键道具是否齐全，有玩家最终是在背包中找到遗漏的 DLC 道具。若高速帧率下场景异常，可临时改为 30 帧再试；仍失败时提供截图及运行日志，不能把所有 DLC 故障都归因于帧率。"));
+        issueColumn.Controls.Add(issueScenes.Parent);
 
         TableLayoutPanel inputColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -1468,6 +1630,32 @@ sealed class MainForm : Form {
     }
 
     static CheckBox Check(string text) { return new CheckBox { Text = text, AutoSize = true }; }
+    void BindOnlineAccountBoxes() {
+        BindOnlineAccountBox(onlineNpidBox, seamlessNpidBox);
+        BindOnlineAccountBox(onlinePasswordBox, seamlessPasswordBox);
+        BindOnlineAccountBox(onlineQqBox, seamlessQqBox);
+        BindOnlineAccountBox(onlineNicknameBox, seamlessNicknameBox);
+    }
+    void BindOnlineAccountBox(TextBox online, TextBox seamless) {
+        online.TextChanged += delegate { if (seamless.Text != online.Text) seamless.Text = online.Text; };
+        seamless.TextChanged += delegate { if (online.Text != seamless.Text) online.Text = seamless.Text; };
+        EventHandler save = delegate {
+            try { PersistOnlineApplication(); }
+            catch (Exception e) { Log("保存在线账号资料失败：" + e.Message); }
+        };
+        online.Leave += save;
+        seamless.Leave += save;
+    }
+    static void MirrorStatus(Label source, Label target) {
+        Action sync = delegate { target.Text = source.Text; target.ForeColor = source.ForeColor; };
+        source.TextChanged += delegate { sync(); };
+        source.ForeColorChanged += delegate { sync(); };
+        sync();
+    }
+    static void MirrorButtonEnabled(Button source, Button target) {
+        source.EnabledChanged += delegate { target.Enabled = source.Enabled; };
+        target.Enabled = source.Enabled;
+    }
     Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = SystemColors.GrayText,
         MaximumSize = new Size(S(710), 0), Margin = new Padding(0, S(2), 0, S(6)) }; }
     LinkLabel Link(string title, string url) {
@@ -1538,6 +1726,7 @@ sealed class MainForm : Form {
         bbscLabMod.Checked = Get(state, "bbsc_lab_mod", "0") == "1";
         onlineNpidBox.Text = Get(state, "online_npid", "");
         onlinePasswordBox.Text = UnprotectSecret(Get(state, "online_password_dpapi", ""));
+        onlineQqBox.Text = UnprotectSecret(Get(state, "online_qq_dpapi", ""));
         onlineNicknameBox.Text = Get(state, "online_nickname", "");
         onlineShowInList.Checked = Get(state, "online_show_in_list", "0") == "1";
         onlineApplicationId = Get(state, "online_application_id", "");
@@ -1546,6 +1735,7 @@ sealed class MainForm : Form {
             onlineApplicationStatus.Text = "申请状态：已有待查询申请，请点击“查询申请进度”。";
         onlineServiceStatus.Text = PublicServerAddress().Length == 0
             ? "服务状态：尚未开放（此安装包未配置公共服务）" : "服务状态：尚未检测";
+        seamlessServiceStatus.Text = onlineServiceStatus.Text;
         onlineLoginStatus.Text = "登录状态：未登录";
         SelectValue(qualityProfile, Get(state, "quality_profile", "medium"));
         Dictionary<string, string> ini = ReadValues(Path.Combine(rootBox.Text, "bbport.ini"));
@@ -1621,14 +1811,16 @@ sealed class MainForm : Form {
     }
 
     static string PublicServerAddress() { return OnlinePackageSetting("server"); }
-    static string OverlayServerIp() {
-        string value = OnlinePackageSetting("overlay_server");
+    static string TailnetPackageIp(string key) {
+        string value = OnlinePackageSetting(key);
         IPAddress ip;
         if (!IPAddress.TryParse(value, out ip) || ip.AddressFamily != AddressFamily.InterNetwork)
             return "";
         byte[] bytes = ip.GetAddressBytes();
         return bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127 ? value : "";
     }
+    static string OverlayServerIp() { return TailnetPackageIp("overlay_server"); }
+    static string SeamlessOverlayServerIp() { return TailnetPackageIp("seamless_overlay_server"); }
     static bool PublicServiceIsLoopback() {
         if (OverlayServerIp().Length != 0) return false;
         string host;
@@ -1673,6 +1865,24 @@ sealed class MainForm : Form {
         IPAddress address;
         return IPAddress.TryParse(host, out address) ? address :
             (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ? IPAddress.Loopback : IPAddress.None);
+    }
+
+    static bool LoopbackTcpPortIsReady(int port) {
+        TcpClient client = null;
+        try {
+            client = new TcpClient(AddressFamily.InterNetwork);
+            IAsyncResult pending = client.BeginConnect(IPAddress.Loopback, port, null, null);
+            if (!pending.AsyncWaitHandle.WaitOne(250, false)) return false;
+            client.EndConnect(pending);
+            return client.Connected;
+        } catch { return false; }
+        finally { if (client != null) client.Close(); }
+    }
+
+    static bool LocalSeamlessLabIsReady() {
+        foreach (int port in new int[] { 32313, 32315, 32443, 32444 })
+            if (!LoopbackTcpPortIsReady(port)) return false;
+        return true;
     }
 
     static string Get(Dictionary<string, string> map, string key, string fallback) {
@@ -2029,6 +2239,44 @@ sealed class MainForm : Form {
         } catch (Exception e) { message = "无法连接服务器：" + e.Message; return false; }
     }
 
+    static bool CheckBbscLabServices(string address, out string message) {
+        string host;
+        int port;
+        if (!TryParseLanEndpoint(address, out host, out port) ||
+            (port != 32313 && !(host == "127.0.0.3" && port == 31313))) {
+            message = "BBSC 实验服须使用直连 32313，或启动器私网代理 127.0.0.3:31313。"; return false;
+        }
+        try {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(
+                "http://" + host + ":32443/bb-eu/ss.info");
+            request.Timeout = 4000;
+            request.ReadWriteTimeout = 4000;
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) {
+                if (response.StatusCode != HttpStatusCode.OK) {
+                    message = "BBSC 游戏 API 在 32443 端口返回 " + (int)response.StatusCode + "。";
+                    return false;
+                }
+            }
+        } catch (Exception e) {
+            message = "无法连接 BBSC 游戏 API（32443）：" + e.Message; return false;
+        }
+        try {
+            using (TcpClient client = new TcpClient()) {
+                IAsyncResult pending = client.BeginConnect(host, 32444, null, null);
+                if (!pending.AsyncWaitHandle.WaitOne(4000)) throw new IOException("连接超时。");
+                client.EndConnect(pending);
+            }
+        } catch (Exception e) {
+            message = "无法连接 BBSC 中继（32444）：" + e.Message; return false;
+        }
+        message = "BBSC 游戏 API 与中继已就绪。";
+        return true;
+    }
+
+    static bool ShouldStartBundledShadNet(bool online, bool publicOnline, bool lanHost, bool seamless) {
+        return !online && !publicOnline && lanHost && !seamless;
+    }
+
     bool CheckPublicStatus(out string message, out int onlinePlayers,
                                   out List<OnlinePlayer> players) {
         onlinePlayers = -1;
@@ -2096,7 +2344,9 @@ sealed class MainForm : Form {
     void RefreshPublicStatus() {
         if (onlineRefreshButton == null || !onlineRefreshButton.Enabled) return;
         onlineRefreshButton.Enabled = false;
+        seamlessRefreshButton.Enabled = false;
         onlineServiceStatus.Text = "服务状态：正在检测……";
+        seamlessServiceStatus.Text = onlineServiceStatus.Text;
         Thread worker = new Thread(new ThreadStart(delegate {
             string message;
             int count;
@@ -2104,23 +2354,33 @@ sealed class MainForm : Form {
             bool ok = CheckPublicStatus(out message, out count, out players);
             if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
                 onlineRefreshButton.Enabled = true;
+                seamlessRefreshButton.Enabled = true;
                 onlineServiceStatus.Text = "服务状态：" + message;
                 onlineServiceStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                seamlessServiceStatus.Text = onlineServiceStatus.Text;
+                seamlessServiceStatus.ForeColor = onlineServiceStatus.ForeColor;
                 onlineCountStatus.Text = "在线人数：" + (count < 0 ? "暂不可用" : count.ToString()) +
                     "　公开列表：" + players.Count;
-                onlineUsersList.BeginUpdate();
-                onlineUsersList.Items.Clear();
-                foreach (OnlinePlayer player in players) {
-                    ListViewItem row = new ListViewItem(player.Npid);
-                    row.SubItems.Add(player.Nickname);
-                    row.SubItems.Add(player.Title);
-                    onlineUsersList.Items.Add(row);
-                }
-                onlineUsersList.EndUpdate();
+                seamlessCountStatus.Text = onlineCountStatus.Text;
+                FillOnlineUsersList(onlineUsersList, players);
+                FillOnlineUsersList(seamlessUsersList, players);
             });
         }));
         worker.IsBackground = true;
         worker.Start();
+    }
+
+    static void FillOnlineUsersList(ListView list, List<OnlinePlayer> players) {
+        list.BeginUpdate();
+        try {
+            list.Items.Clear();
+            foreach (OnlinePlayer player in players) {
+                ListViewItem row = new ListViewItem(player.Npid);
+                row.SubItems.Add(player.Nickname);
+                row.SubItems.Add(player.Title);
+                list.Items.Add(row);
+            }
+        } finally { list.EndUpdate(); }
     }
 
     static void CheckHeadscaleHealth(string control) {
@@ -2213,12 +2473,47 @@ sealed class MainForm : Form {
                 udp.Add(new Dictionary<string, object> { { "listen", "127.0.0.2:31314" },
                     { "remote", serverIp + ":31314" } });
             }
+            string seamlessServerIp = SeamlessOverlayServerIp();
+            if (seamlessServerIp.Length != 0) {
+                int[][] routes = new int[][] {
+                    new int[] { 31313, 31313 }, new int[] { 31315, 31315 },
+                    // BBSC's HTTP wrapper normalizes summon_messenger to the
+                    // lab WebAPI port even when the route file names 31315.
+                    // Keep the normal shadNet status proxy and add this local
+                    // compatibility alias to the same isolated tailnet port.
+                    new int[] { 32315, 31315 },
+                    new int[] { 32443, 18080 }, new int[] { 32444, 31316 }
+                };
+                foreach (int[] route in routes)
+                    tcp.Add(new Dictionary<string, object> { { "listen", "127.0.0.3:" + route[0] },
+                        { "remote", seamlessServerIp + ":" + route[1] } });
+            }
             config["tcp_proxies"] = tcp;
             config["udp_proxies"] = udp;
+            if (seamlessServerIp.Length != 0 && LocalSeamlessLabIsReady()) {
+                List<Dictionary<string, object>> tcpPublishes = new List<Dictionary<string, object>>();
+                int[][] publishes = new int[][] {
+                    new int[] { 31313, 32313 }, new int[] { 31315, 32315 },
+                    new int[] { 18080, 32443 }, new int[] { 31316, 32444 }
+                };
+                foreach (int[] route in publishes)
+                    tcpPublishes.Add(new Dictionary<string, object> {
+                        { "tailnet_port", route[0] }, { "local", "127.0.0.1:" + route[1] }
+                    });
+                List<Dictionary<string, object>> udpPublishes = new List<Dictionary<string, object>>();
+                udpPublishes.Add(new Dictionary<string, object> {
+                    { "tailnet_port", 31314 }, { "local", "127.0.0.1:32314" }, { "stun_source", true }
+                });
+                config["tcp_publishes"] = tcpPublishes;
+                config["udp_publishes"] = udpPublishes;
+                Log("检测到本机 BBSC Docker 服务；当前私网节点将同时发布隔离的无缝联机端口。");
+            }
             string configFile = Path.Combine(state, "client.json");
             File.WriteAllText(configFile, JsonSerializer().Serialize(config), new UTF8Encoding(false));
             string arguments = "--config \"" + configFile + "\"" +
                 (deviceKey.Length > 0 ? " --auth-key-stdin" : "");
+            string trafficLog = Path.Combine(root, "logs", "net-traffic-" +
+                DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".log");
             ProcessStartInfo info = new ProcessStartInfo(executable, arguments) {
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -2230,7 +2525,7 @@ sealed class MainForm : Form {
             Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
             string markerForProcess = enrolledMarker;
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args) {
-                if (args.Data != null) HandleEmbeddedNetEvent(args.Data, control, markerForProcess);
+                if (args.Data != null) HandleEmbeddedNetEvent(args.Data, control, markerForProcess, trafficLog);
             };
             process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) {
                 if (args.Data != null) Log("内置私网诊断：" + args.Data);
@@ -2263,7 +2558,8 @@ sealed class MainForm : Form {
         }
     }
 
-    void HandleEmbeddedNetEvent(string line, string control, string enrolledMarker) {
+    void HandleEmbeddedNetEvent(string line, string control, string enrolledMarker,
+                                string trafficLog) {
         Dictionary<string, object> item;
         try { item = JsonSerializer().DeserializeObject(line) as Dictionary<string, object>; }
         catch { return; }
@@ -2272,6 +2568,30 @@ sealed class MainForm : Form {
         string ip = PublicField(item, "ip");
         string auth = PublicField(item, "auth_url");
         string error = PublicField(item, "error");
+        if (state == "traffic") {
+            object rawTraffic;
+            Dictionary<string, object> traffic = item.TryGetValue("traffic", out rawTraffic)
+                ? rawTraffic as Dictionary<string, object> : null;
+            if (traffic == null) return;
+            string detail = "私网 UDP：总发出=" + PublicField(traffic, "sent") +
+                "，总收到=" + PublicField(traffic, "received") +
+                "，玩家发出=" + PublicField(traffic, "peer_sent") +
+                "，玩家收到=" + PublicField(traffic, "peer_received") +
+                "，本地拒收=" + PublicField(traffic, "rejected_local") +
+                "，私网拒收=" + PublicField(traffic, "rejected_tailnet") +
+                "，发送错误=" + PublicField(traffic, "send_errors") +
+                "，交付错误=" + PublicField(traffic, "delivery_errors") +
+                "，发往=" + PublicField(traffic, "last_sent_peer") +
+                "，来自=" + PublicField(traffic, "last_received_peer");
+            Log(detail);
+            try {
+                Directory.CreateDirectory(Path.GetDirectoryName(trafficLog));
+                File.AppendAllText(trafficLog,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) +
+                    " " + detail + Environment.NewLine, new UTF8Encoding(false));
+            } catch (Exception e) { Log("无法保存私网 P2P 诊断日志：" + e.Message); }
+            return;
+        }
         if (state == "ready") {
             IPAddress parsed;
             if (IPAddress.TryParse(ip, out parsed) && parsed.AddressFamily == AddressFamily.InterNetwork) {
@@ -2298,6 +2618,8 @@ sealed class MainForm : Form {
             } else if (state == "error") {
                 onlineTailscaleStatus.Text = "内置私网：连接失败（" + error + "）";
                 onlineTailscaleStatus.ForeColor = Color.Firebrick;
+                seamlessNetworkStatus.Text = onlineTailscaleStatus.Text;
+                seamlessNetworkStatus.ForeColor = Color.Firebrick;
                 if (onlineSetupWaitingForNet) FailGuidedOnline("内置私网连接失败：" + error);
             } else {
                 RefreshTailscaleStatus();
@@ -2312,6 +2634,8 @@ sealed class MainForm : Form {
             embeddedNetProcess != null && !embeddedNetProcess.HasExited ? "内置私网：等待授权或分配地址" :
             "内置私网：未连接";
         onlineTailscaleStatus.ForeColor = ready ? Color.DarkGreen : Color.DarkOrange;
+        seamlessNetworkStatus.Text = onlineTailscaleStatus.Text;
+        seamlessNetworkStatus.ForeColor = onlineTailscaleStatus.ForeColor;
     }
 
     Dictionary<string, object> OnlinePortalRequest(string route, Dictionary<string, object> body) {
@@ -2351,14 +2675,22 @@ sealed class MainForm : Form {
     void SetGuidedOnlineBusy(bool active) {
         onlineSetupInProgress = active;
         onlineQuickButton.Enabled = !active && OverlayServerIp().Length != 0;
+        seamlessQuickButton.Enabled = !active && SeamlessOverlayServerIp().Length != 0;
         onlineApplyButton.Enabled = !active;
         onlineQueryButton.Enabled = !active;
         onlineRegisterButton.Enabled = !active;
         onlineHeadscaleButton.Enabled = !active;
+        onlineTailscaleButton.Enabled = !active;
+        onlineManualLaunchButton.Enabled = !active;
+        seamlessManualLaunchButton.Enabled = !active;
         onlineNpidBox.Enabled = !active;
         onlinePasswordBox.Enabled = !active;
         onlineQqBox.Enabled = !active;
         onlineNicknameBox.Enabled = !active;
+        seamlessNpidBox.Enabled = !active;
+        seamlessPasswordBox.Enabled = !active;
+        seamlessQqBox.Enabled = !active;
+        seamlessNicknameBox.Enabled = !active;
         onlineShowInList.Enabled = !active;
         coreMode.Enabled = !active;
         rootBox.Enabled = !active;
@@ -2368,9 +2700,10 @@ sealed class MainForm : Form {
     }
 
     void GuidedOnlineStatus(string message) {
-        onlineSetupStatus.Text = "准备状态：" + message;
-        onlineSetupStatus.ForeColor = Color.DarkOrange;
-        Log("在线联机准备：" + message);
+        Label target = guidedSeamless ? seamlessSetupStatus : onlineSetupStatus;
+        target.Text = "准备状态：" + message;
+        target.ForeColor = Color.DarkOrange;
+        Log((guidedSeamless ? "在线无缝联机" : "在线联机") + "准备：" + message);
     }
 
     void FailGuidedOnline(string message) {
@@ -2378,10 +2711,12 @@ sealed class MainForm : Form {
         onlineSetupWaitingForNet = false;
         onlineSetupTimer.Stop();
         SetGuidedOnlineBusy(false);
-        onlineSetupStatus.Text = "准备状态：未完成——" + message;
-        onlineSetupStatus.ForeColor = Color.Firebrick;
-        Log("在线联机准备失败：" + message);
-        MessageBox.Show(this, message, "在线联机准备失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        Label target = guidedSeamless ? seamlessSetupStatus : onlineSetupStatus;
+        target.Text = "准备状态：未完成——" + message;
+        target.ForeColor = Color.Firebrick;
+        Log((guidedSeamless ? "在线无缝联机" : "在线联机") + "准备失败：" + message);
+        MessageBox.Show(this, message, guidedSeamless ? "在线无缝联机准备失败" : "在线联机准备失败",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     void GuidedOnlineUi(Action action) {
@@ -2389,7 +2724,7 @@ sealed class MainForm : Form {
         Invoke(action);
     }
 
-    void StartGuidedOnline() {
+    void StartGuidedOnline(bool seamless) {
         if (onlineSetupInProgress) return;
         if (busy) { Warn("请先等待当前安装或游戏进程结束。"); return; }
         if (!onlineApplyButton.Enabled || !onlineQueryButton.Enabled || !onlineRegisterButton.Enabled) {
@@ -2410,17 +2745,31 @@ sealed class MainForm : Form {
         if (OverlayServerIp().Length == 0 || HeadscaleControlUrl().Length == 0) {
             Warn("此安装包未配置远端私网服务，请使用在线测试版安装包。"); return;
         }
+        if (seamless && SeamlessOverlayServerIp().Length == 0) {
+            Warn("此安装包未配置在线无缝联机服务。"); return;
+        }
         string root;
         try { root = Path.GetFullPath(rootBox.Text.Trim().Trim('"')); }
         catch { Warn("请先在“设置”页选择有效运行环境目录。"); return; }
         if (!File.Exists(Path.Combine(root, "net", "bbport-net.exe"))) {
             Warn("运行环境缺少内置私网组件。请先点击“安装 / 更新运行环境”。"); return;
         }
+        if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe")) ||
+            !File.Exists(Path.Combine(root, "python", "python.exe")) ||
+            !File.Exists(Path.Combine(root, "scripts", "run_game.py"))) {
+            Warn("运行环境不完整。请先点击“安装 / 更新运行环境”。"); return;
+        }
+        if (seamless && !BbscFilesReady(root)) {
+            Warn("BBSC 组件未安装或校验失败。请先点击“安装 / 更新运行环境”。"); return;
+        }
         if (!CheckGame()) { Warn("请先在“设置”页选择正确的游戏本体目录。"); return; }
         if (saveRootBox.Text.Trim().Length == 0) { Warn("请先选择玩家数据目录。"); return; }
 
         string applicationId = onlineApplicationId, applicationToken = onlineApplicationToken;
         bool showInList = onlineShowInList.Checked;
+        guidedSeamless = seamless;
+        try { PersistOnlineApplication(); }
+        catch (Exception e) { Warn("保存账号资料失败：" + e.Message); return; }
         SetGuidedOnlineBusy(true);
         GuidedOnlineStatus("1/4 正在检查在线服务……");
         Thread worker = new Thread(new ThreadStart(delegate {
@@ -2521,21 +2870,26 @@ sealed class MainForm : Form {
         onlineSetupWaitingForNet = false;
         onlineSetupTimer.Stop();
         GuidedOnlineStatus("4/4 正在验证游戏服务……");
+        bool seamless = guidedSeamless;
         Thread worker = new Thread(new ThreadStart(delegate {
             string message = "";
             bool ok = false;
+            string endpoint = seamless ? "127.0.0.3:31313" : "127.0.0.2:31313";
             for (int attempt = 0; attempt < 5 && !ok; ++attempt) {
-                ok = CheckLanStatus("127.0.0.2:31313", out message);
-                if (ok) ok = CheckGuidedGameGateway(out message);
+                ok = CheckLanStatus(endpoint, out message);
+                if (ok) ok = CheckGuidedGameGateway(seamless ? "127.0.0.3" : "127.0.0.2", out message);
+                if (ok && seamless) ok = CheckBbscLabServices(endpoint, out message);
                 if (!ok && attempt < 4) Thread.Sleep(1500);
             }
             if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
                 if (!onlineSetupInProgress) return;
                 if (!ok) { FailGuidedOnline("私网已连接，但游戏服务未响应：" + message); return; }
-                SelectValue(coreMode, "public_online");
+                if (seamless) PrepareSeamlessLaunch();
+                else SelectValue(coreMode, "public_online");
                 SetGuidedOnlineBusy(false);
-                onlineSetupStatus.Text = "准备状态：账号、私网和游戏服务已就绪，正在启动游戏。";
-                onlineSetupStatus.ForeColor = Color.DarkGreen;
+                Label target = seamless ? seamlessSetupStatus : onlineSetupStatus;
+                target.Text = "准备状态：账号、私网和游戏服务已就绪，正在启动游戏。";
+                target.ForeColor = Color.DarkGreen;
                 StartGame();
             });
         }));
@@ -2543,10 +2897,35 @@ sealed class MainForm : Form {
         worker.Start();
     }
 
-    static bool CheckGuidedGameGateway(out string message) {
+    void PrepareSeamlessLaunch() {
+        SelectValue(coreMode, "native_lan");
+        lanNpidBox.Text = onlineNpidBox.Text.Trim();
+        lanPasswordBox.Text = onlinePasswordBox.Text;
+        lanAddressBox.Text = "127.0.0.3:31313";
+        lanHost.Checked = false;
+        lanSeamless.Checked = true;
+        bbscLabMod.Checked = true;
+    }
+
+    void StartManualSeamless() {
+        if (!CanStartManualOnline()) return;
+        if (!EmbeddedNetReady()) { Warn("内置私网尚未连接。请先完成上方手动步骤并确认已获得私网地址。"); return; }
+        PrepareSeamlessLaunch();
+        StartGame();
+    }
+
+    bool CanStartManualOnline() {
+        if (busy || onlineSetupInProgress) { Warn("请等待当前操作完成后再启动游戏。"); return false; }
+        if (!onlineApplyButton.Enabled || !onlineQueryButton.Enabled || !onlineRegisterButton.Enabled) {
+            Warn("在线账号操作尚未完成，请稍候再启动游戏。"); return false;
+        }
+        return true;
+    }
+
+    static bool CheckGuidedGameGateway(string host, out string message) {
         try {
             using (TcpClient client = new TcpClient()) {
-                IAsyncResult pending = client.BeginConnect("127.0.0.2", 31313, null, null);
+                IAsyncResult pending = client.BeginConnect(host, 31313, null, null);
                 if (!pending.AsyncWaitHandle.WaitOne(4000)) throw new IOException("游戏协议连接超时。");
                 client.EndConnect(pending);
                 client.ReceiveTimeout = 4000;
@@ -2567,6 +2946,7 @@ sealed class MainForm : Form {
         state["online_application_id"] = onlineApplicationId;
         state["online_application_token_dpapi"] = ProtectSecret(onlineApplicationToken);
         state["online_npid"] = onlineNpidBox.Text.Trim();
+        state["online_qq_dpapi"] = ProtectSecret(onlineQqBox.Text.Trim());
         state["online_nickname"] = onlineNicknameBox.Text.Trim();
         state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
         state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
@@ -2865,9 +3245,10 @@ sealed class MainForm : Form {
         options.LanHost = !options.PublicOnline && lanHost.Checked;
         options.LanSeamless = options.NativeLan && !options.PublicOnline && lanSeamless.Checked;
         options.BbscLabMod = options.LanSeamless && bbscLabMod.Checked;
+        bool seamlessOverlayReady = options.LanSeamless && SeamlessOverlayServerIp().Length != 0 && EmbeddedNetReady();
         options.LanAddress = options.PublicOnline ?
             (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
-            lanAddressBox.Text.Trim();
+            (seamlessOverlayReady ? "127.0.0.3:31313" : lanAddressBox.Text.Trim());
         options.LanNpid = options.PublicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim();
         options.LanPassword = options.PublicOnline ? onlinePasswordBox.Text : lanPasswordBox.Text;
         options.LanEmail = options.PublicOnline ? "" : lanEmailBox.Text.Trim();
@@ -2916,11 +3297,13 @@ sealed class MainForm : Form {
         options.Env["BB_SHADNET_NPID"] = validOnlineEndpoint ? options.LanNpid : "";
         options.Env["BB_SHADNET_PASSWORD"] = validOnlineEndpoint ? options.LanPassword : "";
         options.Env["BB_UPNP"] = validOnlineEndpoint ? "0" : "";
-        bool overlayGame = options.PublicOnline && OverlayServerIp().Length != 0 && EmbeddedNetReady();
+        bool overlayGame = (options.PublicOnline && OverlayServerIp().Length != 0 && EmbeddedNetReady()) ||
+            seamlessOverlayReady;
+        string gameOverlayServerIp = seamlessOverlayReady ? SeamlessOverlayServerIp() : OverlayServerIp();
         options.Env["SHADPS4_P2P_PORT"] = overlayGame ? "31316" : "";
         options.Env["BB_TSNET_BRIDGE_PORT"] = overlayGame ? "31416" : "";
         options.Env["BB_TSNET_NODE_IP"] = overlayGame ? embeddedNetIp : "";
-        options.Env["BB_TSNET_SERVER_IP"] = overlayGame ? OverlayServerIp() : "";
+        options.Env["BB_TSNET_SERVER_IP"] = overlayGame ? gameOverlayServerIp : "";
         options.Env["SHADPS4_BLOODBORNE_SEAMLESS_COOP"] =
             validOnlineEndpoint && options.LanSeamless && !options.BbscLabMod ? "1" : "";
         options.Env["BB_SEAMLESS_LAB"] = validOnlineEndpoint && options.LanSeamless ? "1" : "";
@@ -2965,7 +3348,9 @@ sealed class MainForm : Form {
         }
         if (requireInstalled && !publicOnline && !lanMode && lanSeamless.Checked &&
             bbscLabMod.Checked && !BbscFilesReady(root)) {
-            Warn("BBSC 实验组件未就绪：请点击“导入 BBSC 官方测试包…”并选择官方 BBport ZIP。正式版不附带此第三方组件。");
+            Warn(BundledBbsc ?
+                "BBSC 实验组件未就绪或校验失败：请先点击“安装 / 更新运行环境”。若已有不同版本的手工组件，安装器不会覆盖，请先自行备份并处理。" :
+                "BBSC 实验组件未就绪：请点击“导入 BBSC 官方测试包…”并选择官方 BBport ZIP。");
             return false;
         }
         if (requireInstalled && !lanMode) {
@@ -2979,31 +3364,42 @@ sealed class MainForm : Form {
                 return false;
             }
         }
-        if (lanMode || nativeLan) {
+        // Installation only needs local paths and game files. The embedded
+        // network client is installed by this very operation, so requiring
+        // its node ID here would make first-time online setup impossible.
+        if (requireInstalled && (lanMode || nativeLan)) {
             if (publicOnline && OverlayServerIp().Length != 0 && !EmbeddedNetReady()) {
                 Warn("请先在“在线联机”页连接内置私网，待显示节点地址后再启动游戏。"); return false;
+            }
+            if (!publicOnline && lanSeamless.Checked && SeamlessOverlayServerIp().Length != 0 && !EmbeddedNetReady()) {
+                Warn("该安装包已配置独立无缝私网。请先在“在线无缝联机”页一键准备，或展开手动操作连接内置私网后再启动。"); return false;
             }
             if (!Regex.IsMatch(publicOnline ? onlineNpidBox.Text.Trim() : lanNpidBox.Text.Trim(), @"^[A-Za-z0-9_-]{3,16}$")) {
                 Warn("联机 ID 必须为 3–16 位英文、数字、下划线或短横线。"); return false;
             }
         }
-        if (lanMode || nativeLan) {
+        if (requireInstalled && (lanMode || nativeLan)) {
             string host;
             int port;
             string address = publicOnline ?
                 (OverlayServerIp().Length != 0 && EmbeddedNetReady() ? "127.0.0.2:31313" : PublicServerAddress()) :
-                lanAddressBox.Text;
+                (lanSeamless.Checked && SeamlessOverlayServerIp().Length != 0 && EmbeddedNetReady() ?
+                    "127.0.0.3:31313" : lanAddressBox.Text);
             if (!TryParseLanEndpoint(address, out host, out port)) {
                 Warn(publicOnline ? "公共在线服务尚未配置，当前安装包暂不能使用在线联机。" :
                     "shadNet 服务器地址无效。请填写 IPv4 或主机名，例如 192.168.1.20。"); return false;
             }
-            if (!publicOnline && lanSeamless.Checked && (port != 32313 || lanHost.Checked)) {
+            bool seamlessOverlay = !publicOnline && lanSeamless.Checked &&
+                SeamlessOverlayServerIp().Length != 0 && EmbeddedNetReady();
+            if (!publicOnline && lanSeamless.Checked &&
+                ((seamlessOverlay && (host != "127.0.0.3" || port != 31313)) ||
+                 (!seamlessOverlay && port != 32313) || lanHost.Checked)) {
                 Warn("实验性无缝匹配只能连接独立测试服务的 32313 端口，并须取消“本机同时作为局域网服务器”。\r\n\r\n" +
                      "现有 31313 传统联机服务不能切换成实验模式；跨死亡、传送的完整无缝联机也尚未完成。");
                 return false;
             }
             if (!publicOnline && !lanMode && bbscLabMod.Checked &&
-                (!lanSeamless.Checked || port != 32313)) {
+                (!lanSeamless.Checked || (seamlessOverlay ? port != 31313 : port != 32313))) {
                 Warn("BBSC 实验补丁只允许在“原生局域网 + 独立 32313 无缝测试服”使用。请勿连接正式在线服务。");
                 return false;
             }
@@ -3056,7 +3452,10 @@ sealed class MainForm : Form {
         string folder = Path.Combine(root, "runtime", "bbsc");
         foreach (string name in new[] { "bbsc-launch.exe", "bbsc.dll", "LICENSE.txt", "NOTICE.txt", "SUPPORTERS.txt", "mod.json" })
             if (!File.Exists(Path.Combine(folder, name))) return false;
-        return true;
+        return FileSha256(Path.Combine(folder, "bbsc-launch.exe")).Equals(
+                   "087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043", StringComparison.OrdinalIgnoreCase) &&
+               FileSha256(Path.Combine(folder, "bbsc.dll")).Equals(
+                   "239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445", StringComparison.OrdinalIgnoreCase);
     }
 
     void ImportBbscTestPackage() {
@@ -3513,6 +3912,24 @@ sealed class MainForm : Form {
         using (resource)
         using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read)) {
             int count = archive.Entries.Count;
+            // An update must not silently replace a manually installed BBSC version.
+            // Check every bundled component before extracting any runtime files.
+            foreach (ZipArchiveEntry entry in archive.Entries) {
+                string relative = entry.FullName.Replace('\\', '/');
+                if (!relative.StartsWith("runtime/bbsc/", StringComparison.OrdinalIgnoreCase) || entry.Name.Length == 0)
+                    continue;
+                string target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("内置文件路径不安全：" + entry.FullName);
+                if (!File.Exists(target)) continue;
+                string bundledHash;
+                using (SHA256 sha = SHA256.Create())
+                using (Stream input = entry.Open())
+                    bundledHash = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
+                if (!FileSha256(target).Equals(bundledHash, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("现有手工 BBSC 文件与离线包版本不同，不会覆盖：" + target +
+                        "。请自行备份并处理，或选择新的运行环境目录。");
+            }
             BeginInvoke((Action)delegate { progress.Maximum = Math.Max(1, count); });
             for (int i = 0; i < count; ++i) {
                 ZipArchiveEntry entry = archive.Entries[i];
@@ -3520,6 +3937,8 @@ sealed class MainForm : Form {
                 if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("内置文件路径不安全：" + entry.FullName);
                 if (entry.Name.Length == 0) { Directory.CreateDirectory(target); continue; }
+                if (entry.FullName.Replace('\\', '/').StartsWith("runtime/bbsc/", StringComparison.OrdinalIgnoreCase) &&
+                    File.Exists(target)) continue;
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
                 using (Stream input = entry.Open())
                 using (FileStream output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None))
@@ -3541,8 +3960,14 @@ sealed class MainForm : Form {
         UpdateButtons();
         if (error == null) {
             progress.Value = progress.Maximum;
-            statusLabel.Text = "安装完成，可以启动游戏。";
+            bool onlineMode = Value(coreMode) == "public_online";
+            statusLabel.Text = onlineMode ? "安装完成。请在“在线联机”页准备账号与私网。" : "安装完成，可以启动游戏。";
             Log("安装完成。");
+            if (onlineMode) {
+                foreach (TabPage page in tabs.TabPages)
+                    if (page.Text == "在线联机") { tabs.SelectedTab = page; break; }
+                return;
+            }
             if (MessageBox.Show(this, "运行环境已安装完成。现在启动游戏吗？", TitleText,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes) StartGame();
         } else {
@@ -3580,6 +4005,7 @@ sealed class MainForm : Form {
         state["lan_secret_dpapi"] = ProtectSecret(lanSecretBox.Text);
         state["online_npid"] = onlineNpidBox.Text.Trim();
         state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
+        state["online_qq_dpapi"] = ProtectSecret(onlineQqBox.Text.Trim());
         state["online_nickname"] = onlineNicknameBox.Text.Trim();
         state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
         state["online_application_id"] = onlineApplicationId;
@@ -3686,31 +4112,31 @@ sealed class MainForm : Form {
     void StartGame() {
         if (!CheckInputs(true)) return;
         LaunchOptions options = Collect();
-        if (options.BbscLabMod && !SaveTools.ReadTitleId(options.Game).Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
-            Warn("BBSC 实验补丁只支持 CUSA03173 v1.09，不允许跳过游戏版本检查。");
-            return;
-        }
         if (options.LanMode || options.NativeLan) {
             string titleId = SaveTools.ReadTitleId(options.Game);
             if (!titleId.Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
                 string shown = titleId.Length == 0 ? "无法识别" : titleId;
-                if (MessageBox.Show(this, "当前游戏区域为“" + shown + "”。\r\n\r\n" +
-                    "当前联机实现只以 CUSA03173 1.09 为验证目标；其他区域可能无法登录、匹配或进入游戏。仍要继续吗？",
+                string warning = options.BbscLabMod ?
+                    "当前游戏区域标记为“" + shown + "”。\r\n\r\n" +
+                    "将按你的要求跳过启动器的 CUSA03173 标记限制，但不会关闭游戏可执行文件的严格校验。" +
+                    "只有 eboot.bin 的已加载映像与已验证的 CUSA03173 v1.09 完全一致，且游戏文件完好时，BBSC 才会继续；否则启动会安全停止。" +
+                    "测试会使用当前玩家数据目录中的存档，启动器会自动备份；建议另行保留一份副本。仍要尝试吗？" :
+                    "当前游戏区域为“" + shown + "”。\r\n\r\n" +
+                    "当前联机实现只以 CUSA03173 1.09 为验证目标；其他区域可能无法登录、匹配或进入游戏。仍要继续吗？";
+                if (MessageBox.Show(this, warning,
                     "联机兼容性提示", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                     return;
             }
         }
         try {
-            if (!options.LanMode && !options.LanSeamless) MigrateLegacySaveIfNeeded(options);
+            if (!options.LanMode) MigrateLegacySaveIfNeeded(options);
             Configure(options, false);
             if (options.LanSeamless) {
-                // Keep the experimental game session away from the existing
-                // traditional/single-player save. Persist the user's selected
-                // base path above, then redirect only this launch and backups.
-                options.SaveRoot = Path.Combine(options.SaveRoot, "seamless-lab");
+                // Use the same player-data directory as ordinary native play.
+                // The experimental mod can write to this save, so always back
+                // it up before and after the test session.
                 options.AutoBackup = true;
-                ConfigureAddons(options);
-                Log("实验性无缝匹配使用独立测试存档：" + options.SaveRoot);
+                Log("实验性无缝匹配沿用现有存档并强制自动备份：" + options.SaveRoot);
             }
         }
         catch (Exception e) { Warn("保存设置失败：" + e.Message); return; }
@@ -3910,9 +4336,7 @@ sealed class MainForm : Form {
                 string statusMessage = "";
                 bool online = CheckLanStatus(options.LanAddress, out statusMessage);
                 bool localEndpoint = IsLocalLanEndpoint(options.LanAddress);
-                if (!online && !options.PublicOnline && (options.LanHost || localEndpoint)) {
-                    if (!options.LanHost)
-                        capture("Native bbport online: local endpoint detected; starting bundled shadNet automatically");
+                if (ShouldStartBundledShadNet(online, options.PublicOnline, options.LanHost, options.LanSeamless)) {
                     string serverError = StartLanServerProcess(options);
                     if (serverError != null) throw new InvalidOperationException("本机 shadNet 启动失败：" + serverError);
                     for (int attempt = 0; attempt < 10; ++attempt) {
@@ -3922,13 +4346,21 @@ sealed class MainForm : Form {
                 }
                 if (!online) {
                     if (options.PublicOnline) throw new IOException("公共在线服务暂时不可用，请稍后重试。");
-                    string localHint = localEndpoint
+                    string localHint = options.LanSeamless
+                        ? " 独立 BBSC 实验服未就绪：请启动 deploy/seamless_lab 容器，确认服务器地址使用 :32313，且 32315 WebAPI 可访问；普通“启动本机服务器”按钮只提供传统 31313 服务。"
+                        : localEndpoint
                         ? " 地址指向本机，但内置服务器未能就绪；请检查 shadnet.exe、防火墙或注册密钥。"
                         : " 请确认开服电脑已启动 shadNet，并检查防火墙和联机地址。";
                     throw new IOException(statusMessage + localHint);
                 }
                 capture("Native bbport online: shadNet WebAPI reachable");
-                if (localEndpoint && !options.PublicOnline) {
+                if (options.BbscLabMod) {
+                    string labMessage;
+                    if (!CheckBbscLabServices(options.LanAddress, out labMessage))
+                        throw new IOException(labMessage + " 请检查独立实验服的 game-api 容器和局域网防火墙。");
+                    capture("Native bbport online: " + labMessage);
+                }
+                if (options.LanHost && !options.LanSeamless && !options.PublicOnline) {
                     if (!Regex.IsMatch(options.LanNpid, @"^[A-Za-z0-9_-]{3,16}$") ||
                         options.LanPassword.Length == 0 || options.LanEmail.IndexOf('@') <= 0)
                         throw new InvalidDataException("本机 shadNet 首次使用需要填写有效的联机 ID、密码和注册邮箱。");
@@ -4055,6 +4487,14 @@ sealed class MainForm : Form {
         installButton.Enabled = !busy && !onlineSetupInProgress;
         saveButton.Enabled = !busy && !onlineSetupInProgress;
         playButton.Enabled = !busy && !onlineSetupInProgress;
+        if (onlineQuickButton != null)
+            onlineQuickButton.Enabled = !busy && !onlineSetupInProgress && OverlayServerIp().Length != 0;
+        if (seamlessQuickButton != null)
+            seamlessQuickButton.Enabled = !busy && !onlineSetupInProgress && SeamlessOverlayServerIp().Length != 0;
+        if (onlineManualLaunchButton != null)
+            onlineManualLaunchButton.Enabled = !busy && !onlineSetupInProgress && OverlayServerIp().Length != 0;
+        if (seamlessManualLaunchButton != null)
+            seamlessManualLaunchButton.Enabled = !busy && !onlineSetupInProgress && SeamlessOverlayServerIp().Length != 0;
         if (shaderExportButton != null) shaderExportButton.Enabled = !busy;
         if (shaderImportButton != null) shaderImportButton.Enabled = !busy;
         if (lanStartServerButton != null)
@@ -4063,6 +4503,7 @@ sealed class MainForm : Form {
             lanStopServerButton.Enabled = !busy && shadNetProcess != null && !shadNetProcess.HasExited;
         if (lanTestButton != null) lanTestButton.Enabled = !busy;
         if (lanRegisterButton != null) lanRegisterButton.Enabled = !busy;
+        if (lanLaunchButton != null) lanLaunchButton.Enabled = !busy && !onlineSetupInProgress;
         if (backupButton != null) backupButton.Enabled = !busy;
         if (restoreButton != null) restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0;
         if (importFolderButton != null) importFolderButton.Enabled = !busy;
@@ -4088,6 +4529,8 @@ sealed class MainForm : Form {
                 return;
             }
         }
+        try { PersistOnlineApplication(); }
+        catch (Exception error) { Log("保存在线账号资料失败：" + error.Message); }
         if (embeddedNetProcess != null && !embeddedNetProcess.HasExited) {
             try { embeddedNetProcess.Kill(); embeddedNetProcess.WaitForExit(2000); } catch { }
         }

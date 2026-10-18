@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,12 +56,59 @@ type config struct {
 }
 
 type event struct {
-	Type          string `json:"type"`
-	State         string `json:"state"`
-	IP            string `json:"ip,omitempty"`
-	UDPBridgePort int    `json:"udp_bridge_port,omitempty"`
-	AuthURL       string `json:"auth_url,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Type          string           `json:"type"`
+	State         string           `json:"state"`
+	IP            string           `json:"ip,omitempty"`
+	UDPBridgePort int              `json:"udp_bridge_port,omitempty"`
+	AuthURL       string           `json:"auth_url,omitempty"`
+	Error         string           `json:"error,omitempty"`
+	Traffic       *trafficSnapshot `json:"traffic,omitempty"`
+}
+
+// Traffic counters contain only packet counts and tailnet peer addresses.
+// Never include packet contents, credentials, or the tsnet state directory.
+type trafficSnapshot struct {
+	Sent             uint64 `json:"sent"`
+	Received         uint64 `json:"received"`
+	PeerSent         uint64 `json:"peer_sent"`
+	PeerReceived     uint64 `json:"peer_received"`
+	RejectedLocal    uint64 `json:"rejected_local"`
+	RejectedTailnet  uint64 `json:"rejected_tailnet"`
+	SendErrors       uint64 `json:"send_errors"`
+	DeliveryErrors   uint64 `json:"delivery_errors"`
+	LastSentPeer     string `json:"last_sent_peer,omitempty"`
+	LastReceivedPeer string `json:"last_received_peer,omitempty"`
+}
+
+type gameTraffic struct {
+	sent            atomic.Uint64
+	received        atomic.Uint64
+	peerSent        atomic.Uint64
+	peerReceived    atomic.Uint64
+	rejectedLocal   atomic.Uint64
+	rejectedTailnet atomic.Uint64
+	sendErrors      atomic.Uint64
+	deliveryErrors  atomic.Uint64
+	lastSentPeer    atomic.Value
+	lastRecvPeer    atomic.Value
+}
+
+func newGameTraffic() *gameTraffic {
+	t := &gameTraffic{}
+	t.lastSentPeer.Store("")
+	t.lastRecvPeer.Store("")
+	return t
+}
+
+func (t *gameTraffic) snapshot() trafficSnapshot {
+	return trafficSnapshot{
+		Sent: t.sent.Load(), Received: t.received.Load(),
+		PeerSent: t.peerSent.Load(), PeerReceived: t.peerReceived.Load(),
+		RejectedLocal: t.rejectedLocal.Load(), RejectedTailnet: t.rejectedTailnet.Load(),
+		SendErrors: t.sendErrors.Load(), DeliveryErrors: t.deliveryErrors.Load(),
+		LastSentPeer:     t.lastSentPeer.Load().(string),
+		LastReceivedPeer: t.lastRecvPeer.Load().(string),
+	}
 }
 
 var outputMu sync.Mutex
@@ -161,8 +209,8 @@ func (c config) validate() error {
 		}
 	}
 	for _, e := range c.UDPPublishes {
-		if e.StunSource && e.TailnetPort != 31314 {
-			return errors.New("stun_source is only valid for shadNet UDP 31314")
+		if e.StunSource && e.TailnetPort != 31314 && e.TailnetPort != 32314 {
+			return errors.New("stun_source is only valid for shadNet UDP 31314 or 32314")
 		}
 	}
 	return nil
@@ -348,8 +396,10 @@ func startBridges(ctx context.Context, srv *tsnet.Server, c config, ip netip.Add
 			return stop(err)
 		}
 		closers = append(closers, local, remote)
-		go serveGameOutbound(ctx, local, remote, c.GameUDPPort)
-		go serveGameInbound(ctx, local, remote, c.GameUDPPort)
+		traffic := newGameTraffic()
+		go serveGameOutbound(ctx, local, remote, c.GameUDPPort, traffic)
+		go serveGameInbound(ctx, local, remote, c.GameUDPPort, traffic)
+		go reportGameTraffic(ctx, traffic)
 		bridgePort = c.UDPBridgePort
 	}
 	return closers, bridgePort, nil
@@ -374,7 +424,25 @@ func serveTCP(ctx context.Context, ln net.Listener, dial func() (net.Conn, error
 	}
 }
 
-func serveGameOutbound(ctx context.Context, local, remote net.PacketConn, gamePort int) {
+func reportGameTraffic(ctx context.Context, traffic *gameTraffic) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	previous := traffic.snapshot()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			current := traffic.snapshot()
+			if current != previous {
+				emit(event{State: "traffic", Traffic: &current})
+				previous = current
+			}
+		}
+	}
+}
+
+func serveGameOutbound(ctx context.Context, local, remote net.PacketConn, gamePort int, traffic *gameTraffic) {
 	buf := make([]byte, 65535)
 	for {
 		n, source, err := local.ReadFrom(buf)
@@ -383,17 +451,27 @@ func serveGameOutbound(ctx context.Context, local, remote net.PacketConn, gamePo
 		}
 		src, err := netip.ParseAddrPort(source.String())
 		if err != nil || !src.Addr().IsLoopback() || int(src.Port()) != gamePort {
+			traffic.rejectedLocal.Add(1)
 			continue
 		}
 		peer, payload, err := parseBridgeFrame(buf[:n])
 		if err != nil {
+			traffic.rejectedLocal.Add(1)
 			continue
 		}
-		_, _ = remote.WriteTo(payload, net.UDPAddrFromAddrPort(peer))
+		if _, err := remote.WriteTo(payload, net.UDPAddrFromAddrPort(peer)); err != nil {
+			traffic.sendErrors.Add(1)
+			continue
+		}
+		traffic.sent.Add(1)
+		if peer.Port() == uint16(gamePort) {
+			traffic.lastSentPeer.Store(peer.String())
+			traffic.peerSent.Add(1)
+		}
 	}
 }
 
-func serveGameInbound(ctx context.Context, local, remote net.PacketConn, gamePort int) {
+func serveGameInbound(ctx context.Context, local, remote net.PacketConn, gamePort int, traffic *gameTraffic) {
 	buf := make([]byte, 65535)
 	game := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: gamePort}
 	for {
@@ -403,13 +481,23 @@ func serveGameInbound(ctx context.Context, local, remote net.PacketConn, gamePor
 		}
 		peer, err := netip.ParseAddrPort(source.String())
 		if err != nil || !tailnetV4.Contains(peer.Addr()) {
+			traffic.rejectedTailnet.Add(1)
 			continue
 		}
 		frame, err := bridgeFrame(peer.Addr(), peer.Port(), buf[:n])
 		if err != nil {
+			traffic.rejectedTailnet.Add(1)
 			continue
 		}
-		_, _ = local.WriteTo(frame, game)
+		if _, err := local.WriteTo(frame, game); err != nil {
+			traffic.deliveryErrors.Add(1)
+			continue
+		}
+		traffic.received.Add(1)
+		if peer.Port() == uint16(gamePort) {
+			traffic.lastRecvPeer.Store(peer.String())
+			traffic.peerReceived.Add(1)
+		}
 	}
 }
 

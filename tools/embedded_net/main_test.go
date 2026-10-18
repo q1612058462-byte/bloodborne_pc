@@ -1,9 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
 )
+
+func TestTrafficSnapshotContainsOnlyCountersAndPeerAddresses(t *testing.T) {
+	traffic := newGameTraffic()
+	traffic.sent.Add(2)
+	traffic.received.Add(1)
+	traffic.peerSent.Add(1)
+	traffic.peerReceived.Add(1)
+	traffic.rejectedLocal.Add(3)
+	traffic.sendErrors.Add(1)
+	traffic.lastSentPeer.Store("100.64.0.8:31316")
+	snapshot := traffic.snapshot()
+	if snapshot.Sent != 2 || snapshot.Received != 1 ||
+		snapshot.PeerSent != 1 || snapshot.PeerReceived != 1 || snapshot.RejectedLocal != 3 ||
+		snapshot.SendErrors != 1 || snapshot.LastSentPeer != "100.64.0.8:31316" {
+		t.Fatalf("unexpected traffic snapshot: %+v", snapshot)
+	}
+	encoded, err := json.Marshal(event{State: "traffic", Traffic: &snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"sent":2`) ||
+		!strings.Contains(string(encoded), `"last_sent_peer":"100.64.0.8:31316"`) {
+		t.Fatalf("traffic event missing diagnostic fields: %s", encoded)
+	}
+}
 
 func TestBridgeFrameRoundTrip(t *testing.T) {
 	ip := netip.MustParseAddr("100.64.1.12")
@@ -74,6 +101,10 @@ func TestStunSourceOnlyOnShadNetUDP(t *testing.T) {
 		UDPPublishes: []publish{{TailnetPort: 31314, Local: "127.0.0.1:31314", StunSource: true}}}
 	if err := c.validate(); err != nil {
 		t.Fatal(err)
+	}
+	c.UDPPublishes[0] = publish{TailnetPort: 32314, Local: "127.0.0.1:32314", StunSource: true}
+	if err := c.validate(); err != nil {
+		t.Fatalf("rejected isolated seamless STUN publish: %v", err)
 	}
 	c.UDPPublishes[0].TailnetPort = 31315
 	if err := c.validate(); err == nil {
