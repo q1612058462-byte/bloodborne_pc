@@ -1193,7 +1193,7 @@ sealed class MainForm : Form {
         seamlessRefreshButton = new Button { Text = "刷新服务状态", AutoSize = true };
         seamlessRefreshButton.Click += delegate { RefreshPublicStatus(); };
         AddSpan(seamlessOverview, Flow(seamlessRefreshButton));
-        AddSpan(seamlessOverview, Note("下方是共用账号服务的在线人数和自愿公开的玩家；并非无缝房间或当前可加入的世界。无缝游戏服务会在一键启动时另行检测。"));
+        AddSpan(seamlessOverview, Note("下方汇总传统与无缝联机的在线人数，只显示自愿公开的玩家；游戏名称含“无缝”表示无缝登录，并非当前可加入的房间。"));
         seamlessUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(130),
             Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
         seamlessUsersList.Columns.Add("联机 ID", S(150));
@@ -1303,6 +1303,7 @@ sealed class MainForm : Form {
         AddSpan(issueInstall, Note("首次安装：先在“设置”选择游戏目录和运行环境目录，点击“安装 / 更新运行环境”；安装本身不需要私网 ID、在线账号或连接服务器。安装后到想玩的在线联机页面填写账号，优先使用一键启动。"));
         AddSpan(issueInstall, Note("显示无法连接服务器：先确认运行环境是当前版本，再用“在线联机”页检查账号、私网和服务。能看到谏言只证明部分在线接口可用，不等于铃铛匹配、玩家互通也已成功。请分别保存双方日志；不要把关闭防火墙当作长期解决办法。"));
         AddSpan(issueInstall, Note("铃铛灰色或搜不到人：传统联机仍受地图、Boss、人物状态和联机密码等条件影响。两人用不同联机 ID、相同游戏内密码，在可召唤区域先由房主摇大铃，另一人摇小铃；若持续失败，记录双方位置、时间和日志。BBSC 无缝实验模式须使用独立测试服。"));
+        AddSpan(issueInstall, Note("无缝专用铃铛未出现：先建立角色并完成一次存档，再退出游戏、重新启动在线无缝联机。启动器会在游戏启动前复制存档供 BBSC 安全备份；若仍未发放，请保留运行日志和 BBSC 日志，不要删除原存档。"));
         issueColumn.Controls.Add(issueInstall.Parent);
 
         TableLayoutPanel issueGame = Group("启动、存档与操作", 2);
@@ -2788,10 +2789,18 @@ sealed class MainForm : Form {
                         applicationId = "";
                         applicationToken = "";
                     }
+                    if (result != null && PublicField(result, "npid").Length > 0 &&
+                        !PublicField(result, "npid").Equals(npid, StringComparison.OrdinalIgnoreCase)) {
+                        // Credentials belong to the old ID. A new ID needs its own application,
+                        // just as it does through the manual application button.
+                        applicationId = "";
+                        applicationToken = "";
+                        result = null;
+                    }
                 }
                 if (applicationId.Length == 0 || applicationToken.Length == 0) {
                     if (!Regex.IsMatch(qq, @"^[1-9][0-9]{4,11}$") || nickname.Length < 1 || nickname.Length > 24)
-                        throw new InvalidOperationException("旧申请不属于当前服务。请填写 QQ 号和昵称后重试。");
+                        throw new InvalidOperationException("申请当前联机 ID 需要填写 QQ 号和昵称。");
                     GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 正在申请并验证账号……"); });
                     Dictionary<string, object> apply = new Dictionary<string, object>();
                     apply["qq"] = qq; apply["nickname"] = nickname; apply["npid"] = npid;
@@ -2809,8 +2818,8 @@ sealed class MainForm : Form {
                     });
                 }
                 if (PublicField(result, "npid").Length > 0 &&
-                    !PublicField(result, "npid").Equals(npid, StringComparison.Ordinal))
-                    throw new InvalidOperationException("已有申请属于另一个联机 ID。请恢复原 ID，或使用分步操作处理账号。");
+                    !PublicField(result, "npid").Equals(npid, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("在线服务返回的联机 ID 与本次申请不一致。");
                 string state = PublicField(result, "state");
                 for (int attempt = 0; state == "pending" && attempt < 24; ++attempt) {
                     GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 等待账号审核，自动重试……"); });
@@ -4281,6 +4290,12 @@ sealed class MainForm : Form {
         List<string> recent = new List<string>();
         object outputLock = new object();
         StreamWriter runLog = null;
+        bool publicSeamless = options.LanSeamless && options.BbscLabMod &&
+            SeamlessOverlayServerIp().Length > 0 && options.LanAddress == "127.0.0.3:31313";
+        string presenceApplicationId = onlineApplicationId, presenceToken = onlineApplicationToken;
+        ManualResetEvent presenceStop = new ManualResetEvent(false);
+        Thread presenceThread = null;
+        bool presenceStarted = false;
         try {
             Directory.CreateDirectory(options.SaveRoot);
             if (options.AutoBackup || options.Env["BB_PATCHES"].Length > 0) {
@@ -4297,6 +4312,52 @@ sealed class MainForm : Form {
             lastRunLog = logPath;
             Action<string> capture = delegate(string line) {
                 if (line == null) return;
+                if (publicSeamless && presenceApplicationId.Length > 0 && presenceToken.Length > 0 &&
+                    line.IndexOf("shadNet authentication confirmed", StringComparison.OrdinalIgnoreCase) >= 0) {
+                    lock (outputLock) {
+                        if (!presenceStarted) {
+                            presenceStarted = true;
+                            presenceThread = new Thread(new ThreadStart(delegate {
+                                bool published = false;
+                                bool warned = false;
+                                Dictionary<string, object> credentials = new Dictionary<string, object>();
+                                credentials["application_id"] = presenceApplicationId;
+                                credentials["application_token"] = presenceToken;
+                                try {
+                                    Dictionary<string, object> account = OnlinePortalRequest("/v1/application", credentials);
+                                    if (PublicField(account, "state") != "registered" ||
+                                        !PublicField(account, "npid").Equals(options.LanNpid,
+                                            StringComparison.OrdinalIgnoreCase)) {
+                                        Log("在线无缝玩家状态未上报：当前联机 ID 与已注册申请不一致。");
+                                        return;
+                                    }
+                                    while (!presenceStop.WaitOne(0)) {
+                                        try {
+                                            Dictionary<string, object> body = new Dictionary<string, object>(credentials);
+                                            body["state"] = "online";
+                                            OnlinePortalRequest("/v1/presence", body);
+                                            published = true;
+                                        } catch (Exception e) {
+                                            if (!warned) Log("在线无缝玩家状态暂不可用：" + e.Message);
+                                            warned = true;
+                                        }
+                                        if (presenceStop.WaitOne(30000)) break;
+                                    }
+                                } catch (Exception e) {
+                                    Log("在线无缝玩家状态未上报：" + e.Message);
+                                } finally {
+                                    if (published) try {
+                                        Dictionary<string, object> body = new Dictionary<string, object>(credentials);
+                                        body["state"] = "offline";
+                                        OnlinePortalRequest("/v1/presence", body);
+                                    } catch (Exception) { }
+                                }
+                            }));
+                            presenceThread.IsBackground = true;
+                            presenceThread.Start();
+                        }
+                    }
+                }
                 if (options.PublicOnline) {
                     string host;
                     int ignoredPort;
@@ -4410,7 +4471,11 @@ sealed class MainForm : Form {
                 SaveTools.PruneAutomaticBackups(options.SaveRoot, 20);
             }
         } catch (Exception e) { error = e.Message; Log("启动失败：" + e); }
-        finally { if (runLog != null) { lock (outputLock) runLog.Dispose(); } }
+        finally {
+            presenceStop.Set();
+            if (presenceThread != null) presenceThread.Join(1200);
+            if (runLog != null) { lock (outputLock) runLog.Dispose(); }
+        }
         string diagnostic = CrashDiagnostic(recent);
         BeginInvoke((Action)delegate { GameFinished(error, exitCode, logPath, diagnostic); });
     }

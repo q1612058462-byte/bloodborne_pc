@@ -128,13 +128,18 @@ class OnlineOverridesTests(unittest.TestCase):
             (game / 'sce_sys').mkdir(parents=True)
             (game / 'sce_sys' / 'param.sfo').write_bytes(b'sfo fixture')
             user = root / 'player'
-            expected = user / 'savedata' / '1' / 'CUSA01363'
+            expected = user / 'savedata' / '1' / 'CUSA01363' / 'SPRJ0005'
             expected.mkdir(parents=True)
+            (expected / 'userdata0000').write_bytes(b'saved before game start')
             with mock.patch('prepare.sfo', return_value={
                     'INSTALL_DIR_SAVEDATA': 'CUSA01363', 'TITLE_ID': 'CUSA03023'}), \
                     mock.patch.dict(os.environ, {}):
-                self.assertEqual(run_game.configure_bbsc_save_dir(user, game), expected)
-                self.assertEqual(os.environ['BBSC_SAVE_DIR'], str(expected))
+                live, snapshot_root = run_game.configure_bbsc_save_dir(user, game)
+                self.assertEqual(live, expected)
+                self.assertNotEqual(os.environ['BBSC_SAVE_DIR'], str(expected))
+                self.assertEqual(Path(os.environ['BBSC_SAVE_DIR']), snapshot_root / 'SPRJ0005')
+                self.assertEqual((snapshot_root / 'SPRJ0005' / 'userdata0000').read_bytes(),
+                                 b'saved before game start')
 
     def test_bbsc_backup_path_is_available_before_first_save(self):
         with self.temporary_directory() as directory:
@@ -145,8 +150,9 @@ class OnlineOverridesTests(unittest.TestCase):
             user = root / 'player'
             with mock.patch('prepare.sfo', return_value={'TITLE_ID': 'CUSA03173'}), \
                     mock.patch.dict(os.environ, {}):
-                result = run_game.configure_bbsc_save_dir(user, game)
-                self.assertEqual(result, user / 'savedata' / '1' / 'CUSA03173')
+                result, snapshot_root = run_game.configure_bbsc_save_dir(user, game)
+                self.assertEqual(result, user / 'savedata' / '1' / 'CUSA03173' / 'SPRJ0005')
+                self.assertIsNone(snapshot_root)
                 self.assertFalse(result.exists())  # Never create an empty "backup" source.
                 self.assertEqual(os.environ['BBSC_SAVE_DIR'], str(result))
 

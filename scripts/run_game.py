@@ -29,6 +29,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -369,12 +370,12 @@ def bbsc_lab_command(command, probe, runtime):
 
 
 def configure_bbsc_save_dir(user_dir, game_dir):
-    """Point BBSC's pre-grant backup at bbport's actual game save folder.
+    """Give BBSC a pre-launch copy of the active save for its bell-kit backup.
 
     BBSC's own fallback only searches shadPS4's CUSA00207 folders. bbport
     stores this title under the game's INSTALL_DIR_SAVEDATA instead, often
-    CUSA01363 even when TITLE_ID is CUSA03023. Without BBSC_SAVE_DIR the mod
-    refuses to grant its bell kit because it cannot back up the save first.
+    CUSA01363 even when TITLE_ID is CUSA03023. The running game can hold the
+    live userdata files open, so BBSC must copy an idle, pre-launch snapshot.
     """
     from prepare import sfo
 
@@ -382,11 +383,24 @@ def configure_bbsc_save_dir(user_dir, game_dir):
     title = metadata.get('INSTALL_DIR_SAVEDATA') or metadata.get('TITLE_ID')
     if not isinstance(title, str) or not re.fullmatch(r'CUSA\d{5}', title):
         raise ValueError('BBSC save backup: game has no valid Bloodborne save title ID')
-    save_dir = Path(user_dir).resolve() / 'savedata' / '1' / title
-    os.environ['BBSC_SAVE_DIR'] = str(save_dir)
-    print(f'BBSC save backup source: {save_dir}' +
-          ('' if save_dir.is_dir() else ' (waiting for the game to create its first save)'))
-    return save_dir
+    save_dir = Path(user_dir).resolve() / 'savedata' / '1' / title / 'SPRJ0005'
+    snapshot_root = None
+    if save_dir.is_dir() and any(save_dir.glob('userdata00*')):
+        backup_root = Path(user_dir).resolve() / 'backups'
+        backup_root.mkdir(parents=True, exist_ok=True)
+        snapshot_root = Path(tempfile.mkdtemp(prefix='bbsc-pregrant-', dir=backup_root))
+        try:
+            shutil.copytree(save_dir, snapshot_root / 'SPRJ0005')
+        except Exception:
+            shutil.rmtree(snapshot_root, ignore_errors=True)
+            raise
+        os.environ['BBSC_SAVE_DIR'] = str(snapshot_root / 'SPRJ0005')
+        print(f'BBSC pre-grant save snapshot: {snapshot_root / "SPRJ0005"}')
+    else:
+        os.environ['BBSC_SAVE_DIR'] = str(save_dir)
+        print(f'BBSC pre-grant save not yet available: {save_dir}; '
+              'create and save a character, then restart seamless co-op to receive its bells')
+    return save_dir, snapshot_root
 
 
 def bbsc_lab_report(runtime, started_at):
@@ -477,6 +491,7 @@ def main():
         sys.exit('Mods: no game folder from scripts/mods.py')
     # A private merged view lasts for this launch, including restarts. Only our own view is removed.
     overlay = merged if Path(merged).resolve() != original else None
+    bbsc_snapshot = None
     try:
         if overlay and not WINDOWS:
             signal.signal(signal.SIGTERM, interrupted)
@@ -561,7 +576,7 @@ def main():
             # game_check above validates the exact supported image before an
             # external DLL can be loaded. Apply this after linking/patching so
             # the BBSC wrapper receives the same bb-probe arguments.
-            configure_bbsc_save_dir(user_dir, original)
+            _, bbsc_snapshot = configure_bbsc_save_dir(user_dir, original)
             command = bbsc_lab_command(command, probe, env('BB_RUNTIME', str(ROOT / 'runtime')))
         if WINDOWS:
             # Packaged builds load their private DLL closure. Development builds use MSYS2's
@@ -578,6 +593,8 @@ def main():
             bbsc_lab_report(env('BB_RUNTIME', str(ROOT / 'runtime')), started_at)
         return result
     finally:
+        if bbsc_snapshot:
+            shutil.rmtree(bbsc_snapshot, ignore_errors=True)
         if overlay:
             remove_overlay(overlay)
 

@@ -73,6 +73,7 @@ seamless_overlay_server=$SeamlessOverlayServerIp
     Set-ZipText $zip 'ONLINE_SERVICE.txt' ($data + "`n")
     Set-ZipText $zip 'APP_VERSION.txt' ($version + "`n")
     Set-ZipText $zip 'RELEASE_NOTES_zh-CN.txt' ([IO.File]::ReadAllText((Join-Path $root 'packaging\RELEASE_NOTES_PLAYER_zh-CN.txt')))
+    Set-ZipText $zip 'scripts/run_game.py' ([IO.File]::ReadAllText((Join-Path $root 'scripts\run_game.py')))
 }
 finally { $zip.Dispose() }
 

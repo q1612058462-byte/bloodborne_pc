@@ -120,6 +120,62 @@ class PortalTests(unittest.TestCase):
             "SELECT login_count FROM activity WHERE npid='Hunter01'").fetchone()[0], 1)
         self.assertNotIn("qq", json.dumps(first))
 
+    def test_seamless_presence_requires_registered_application_and_expires(self):
+        with patch.object(server, "AUTO_APPROVE", True):
+            applied = self.application()
+        body = {"application_id": applied["application_id"],
+                "application_token": applied["application_token"], "state": "online"}
+        with self.assertRaises(PermissionError):
+            self.portal.presence(body)
+        self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
+                               (applied["application_id"],))
+        self.portal.db.commit()
+        with self.assertRaises(PermissionError):
+            self.portal.presence(dict(body, application_token="wrong"))
+        self.assertTrue(self.portal.presence(body)["ok"])
+        with patch.object(server, "stats", side_effect=[{"total_users": 0}, {"users": []}]):
+            result = self.portal.snapshot()
+        self.assertEqual(result["online_players"], 1)
+        self.assertEqual(result["seamless_online_players"], 1)
+        self.assertEqual(result["users"][0]["title_name"], "Bloodborne（无缝）")
+        self.assertEqual(result["users"][0]["npid"], "Hunter01")
+        self.portal.seamless_presence["hunter01"] = 0
+        with patch.object(server, "stats", side_effect=[{"total_users": 0}, {"users": []}]):
+            self.assertEqual(self.portal.snapshot()["online_players"], 0)
+
+    def test_seamless_presence_deduplicates_traditional_login_and_respects_opt_out(self):
+        with patch.object(server, "AUTO_APPROVE", True):
+            applied = self.application(listed=False)
+        self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
+                               (applied["application_id"],))
+        self.portal.db.commit()
+        body = {"application_id": applied["application_id"],
+                "application_token": applied["application_token"], "state": "online"}
+        self.portal.presence(body)
+        with patch.object(server, "stats", side_effect=[{"total_users": 1},
+                {"users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}]):
+            result = self.portal.snapshot()
+        self.assertEqual(result["online_players"], 1)
+        self.assertEqual(result["seamless_online_players"], 1)
+        self.assertEqual(result["users"], [])
+        self.portal.presence(dict(body, state="offline"))
+        self.assertFalse(self.portal.seamless_presence)
+
+    def test_same_player_in_both_modes_is_labeled_once(self):
+        with patch.object(server, "AUTO_APPROVE", True):
+            applied = self.application()
+        self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
+                               (applied["application_id"],))
+        self.portal.db.commit()
+        self.portal.presence({"application_id": applied["application_id"],
+                              "application_token": applied["application_token"], "state": "online"})
+        with patch.object(server, "stats", side_effect=[{"total_users": 1},
+                {"users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}]):
+            result = self.portal.snapshot()
+        self.assertEqual(result["online_players"], 1)
+        self.assertEqual(result["listed_players"], 1)
+        self.assertEqual(result["users"][0]["mode"], "both")
+
 
 if __name__ == "__main__":
     unittest.main()

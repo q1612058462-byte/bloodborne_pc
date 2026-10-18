@@ -31,6 +31,7 @@ HEADSCALE_API_URL = os.environ.get("HEADSCALE_API_URL", "http://headscale:8080")
 HEADSCALE_API_KEY_FILE = Path(os.environ.get("HEADSCALE_API_KEY_FILE", "/run/secrets/headscale_api_key"))
 HEADSCALE_USER_ID = os.environ.get("HEADSCALE_USER_ID", "")
 DEVICE_KEYS_PER_DAY = 5
+SEAMLESS_PRESENCE_SECONDS = 90
 NPID = re.compile(r"[A-Za-z0-9_-]{3,16}\Z")
 QQ = re.compile(r"[1-9][0-9]{4,11}\Z")
 
@@ -154,6 +155,7 @@ class Portal:
         self.db.commit()
         self.lock = threading.RLock()
         self.active = set()
+        self.seamless_presence = {}
 
     def one_time_key(self, application_id, token):
         return mac(self.secret, "register:" + application_id + ":" + token)
@@ -244,6 +246,25 @@ class Portal:
             self.db.commit()
         return {"auth_key": key, "expires_in_seconds": 600}
 
+    def presence(self, body):
+        application_id = str(body.get("application_id", ""))
+        token = str(body.get("application_token", ""))
+        state = str(body.get("state", ""))
+        if state not in ("online", "offline"):
+            raise ValueError("玩家状态无效")
+        with self.lock:
+            row = self.db.execute("SELECT npid,token_hash,state FROM applications WHERE id=?",
+                                  (application_id,)).fetchone()
+            if not row or row["state"] != "registered" or not hmac.compare_digest(
+                    row["token_hash"], mac(self.secret, token)):
+                raise PermissionError("请先完成在线账号注册")
+            npid = row["npid"].lower()
+            if state == "online":
+                self.seamless_presence[npid] = time.time() + SEAMLESS_PRESENCE_SECONDS
+            else:
+                self.seamless_presence.pop(npid, None)
+        return {"ok": True}
+
     def approve(self, application_id):
         with self.lock:
             row = self.db.execute("SELECT state,expires_at FROM applications WHERE id=?",
@@ -258,8 +279,13 @@ class Portal:
         usage = stats("/usage")
         online = stats("/online")
         now = int(time.time())
-        active = {u.get("npid", "") for u in online.get("users", []) if u.get("npid")}
+        traditional_users = online.get("users", [])
+        traditional_active = {str(u.get("npid", "")).lower() for u in traditional_users if u.get("npid")}
         with self.lock:
+            self.seamless_presence = {npid: deadline for npid, deadline in self.seamless_presence.items()
+                                      if deadline > time.time()}
+            seamless_active = set(self.seamless_presence)
+            active = traditional_active | seamless_active
             for npid in active:
                 if npid not in self.active:
                     self.db.execute("INSERT INTO activity VALUES (?,?,?,1) ON CONFLICT(npid) "
@@ -274,16 +300,27 @@ class Portal:
             registered = {r["npid"].lower(): r for r in self.db.execute(
                 "SELECT npid,nickname,show_in_list FROM applications WHERE state='registered'")}
         users = []
-        for user in online.get("users", []):
+        for user in traditional_users:
             npid = str(user.get("npid", ""))
             record = registered.get(npid.lower())
             if not record or not record["show_in_list"] or user.get("appear_offline", False):
                 continue
+            both_modes = npid.lower() in seamless_active
             users.append({"npid": npid, "nickname": record["nickname"],
                           "title_id": user.get("title_id", ""),
-                          "title_name": user.get("title_name", "")})
+                          "title_name": "Bloodborne（传统＋无缝）" if both_modes else user.get("title_name", ""),
+                          "mode": "both" if both_modes else "traditional"})
+        for npid in seamless_active - traditional_active:
+            record = registered.get(npid)
+            if record and record["show_in_list"]:
+                users.append({"npid": record["npid"], "nickname": record["nickname"],
+                              "title_id": "CUSA03173", "title_name": "Bloodborne（无缝）",
+                              "mode": "seamless"})
         users.sort(key=lambda u: u["npid"].lower())
-        return {"ok": True, "online_players": int(usage.get("total_users", 0)),
+        traditional_count = int(usage.get("total_users", 0))
+        return {"ok": True, "online_players": traditional_count + len(seamless_active - traditional_active),
+                "traditional_online_players": traditional_count,
+                "seamless_online_players": len(seamless_active),
                 "listed_players": len(users), "users": users}
 
     def admin_usage(self):
@@ -354,6 +391,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.portal.register(self.body()))
             elif self.path == "/v1/device-key":
                 self.reply(200, self.portal.device_key(self.body()))
+            elif self.path == "/v1/presence":
+                self.reply(200, self.portal.presence(self.body()))
             elif self.path.startswith("/v1/admin/approve/") and self.authorized():
                 self.reply(200, self.portal.approve(self.path.rsplit("/", 1)[-1]))
             else:
