@@ -40,13 +40,22 @@ COPY patches/qt64-server-api.patch /tmp/qt64-server-api.patch
 RUN cd /src && git apply --unidiff-zero /tmp/qt64-server-api.patch
 COPY patches/online-stats.patch /tmp/online-stats.patch
 RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
+# Keep a bounded claim lease and expose cleanup/claim diagnostics only in the
+# isolated seamless mode. The traditional server uses the original behavior.
+COPY patches/seamless-rejoin.patch /tmp/seamless-rejoin.patch
+RUN cd /src && git apply --check /tmp/seamless-rejoin.patch \
+    && git apply /tmp/seamless-rejoin.patch
 # This pinned upstream version needs to retain the authenticated tailnet
 # source when Docker's loopback UDP port mapping rewrites the sender address.
 COPY overrides/stun_server.cpp /src/src/stun_server.cpp
 COPY overrides/stun_server.h /src/src/stun_server.h
 RUN --mount=type=cache,target=/src/build cmake -S /src -B /src/build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
     -DFETCHCONTENT_SOURCE_DIR_ABSL=/src/externals/abseil \
+    && cmake --build /src/build --target test_bloodborne_summon_broker \
+       --parallel "$SHADNET_BUILD_JOBS" \
+    && ctest --test-dir /src/build --output-on-failure \
+       -R '^bloodborne_summon_broker$' \
     && cmake --build /src/build --parallel "$SHADNET_BUILD_JOBS" -- -k 0 \
     && mkdir -p /src/artifacts \
     && cp /src/build/shadnet /src/build/worlds.cfg \

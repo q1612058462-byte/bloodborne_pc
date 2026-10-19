@@ -55,6 +55,24 @@ selected in **存档管理** as ordinary native play. It forces a save backup be
 and after experimental sessions; keep a separate copy as well, because the
 BBSC game hook may change the live save. Older `seamless-lab/` test data is
 left untouched and is not merged into the ordinary save automatically.
+
+The shadNet image applies `deploy/shadnet/patches/seamless-rejoin.patch` and
+runs its summon-broker regression test during the build. Only seamless mode
+reopens an advertisement when an old Claimed/Delivered claim is at least two
+minutes old and the owner posts the next `create`; the traditional mode is
+unchanged. The server logs actual delete `consumed/retained` counts and adds
+diagnostic response headers without changing Bloodborne's JSON reply. This is
+a server-side recovery path, not a rebuilt BBSC client DLL: the bundled DLL
+still does not retry a failed first cleanup. To inspect a suspected failure,
+compare both players' IDs and the isolated shadNet logs around `delete`,
+`claim`, and `expired old claim`. Rebuild only the isolated `shadnet` service
+after merging this patch into an existing server deployment; do not replace
+the traditional online Compose project or delete either data volume.
+`deploy/seamless_lab/patches/bbsc-http-cleanup-retry.patch` documents the
+matching client source fix, but it is not applied to the hash-verified official
+DLL in existing Windows packages. It needs a separately built and verified
+BBSC DLL before the client retry can be claimed as shipped.
+
 Lab sessions generate `host_overrides.bbsc.json` in that directory; ordinary
 `host_overrides.json` and any `host_overrides.custom.json` remain untouched.
 For these early tests, the graphical launcher forces BBSC's default

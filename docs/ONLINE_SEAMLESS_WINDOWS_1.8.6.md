@@ -73,6 +73,18 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
   云端实际 Compose 曾做适配，仓库文件只是参考，不是可直接覆盖的生产配置。
 - 云端现有账号同步 watcher 负责将传统账号供 BBSC 节点使用；本仓库没有它的源文件或服务定义。
   **这是从零重建服务端的缺口**。在取得并审查该实现前，不宣称仅靠本分支可以完整重建现有云端。
+- 隔离 shadNet 的 Docker 构建现在应用
+  [`seamless-rejoin.patch`](../deploy/shadnet/patches/seamless-rejoin.patch)，并在镜像构建时运行 broker
+  状态回归测试。无缝模式中，一个已 Claim/Delivered 的招募即使不断收到 `create`，也只保留原 Claim
+  最多 2 分钟；此后下一次 `create` 会重新开放招募。正常的跨地图准备与短时重复投递仍保留。
+  服务端 `delete` 日志标明实际 `consumed/retained` 条数，HTTP 响应头也提供这两个数字；Claim
+  冲突/找不到目标的结果写入日志和 `X-Bbport-Summon-Claim-Status` 响应头，游戏所需 JSON 响应不变。
+  所有自动重置及诊断响应头均由 seamless 开关限定，传统模式仍使用原匹配行为。
+- [`bbsc-http-cleanup-retry.patch`](../deploy/seamless_lab/patches/bbsc-http-cleanup-retry.patch)
+  是针对固定版 BBSC 源码准备的客户端补丁：首次强制清理请求失败或缺少身份时，下一次招募会重试；
+  对支持新诊断头的服务器记录实际 `consumed` 条数。**此补丁尚未编译进 DLL**，当前启动器仍校验
+  并加载官方 DLL，不能宣称客户端重试已在现有安装包生效。独立部署服务端补丁只能在 Claim 已满
+  2 分钟且玩家再次发送招募时兜底；不能把 HTTP 200 单独当作“旧房间已删”的证据。
 - 若只启用 v1.8.6 的公共无缝玩家列表，需人工比对、合并门户 `server.py` 和 Nginx
   `/v1/presence` 放行配置；先备份现有文件，再只重建 `portal`、执行 `nginx -t` 并热重载代理。
   不重建传统 shadNet，也不更换 `.1`/`.2` 私网身份。此门户更新可延后，不影响游戏联机。
@@ -88,7 +100,11 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
   `dist/` 安装包是本地产物，不在此分支中。
 - 自动检查：`python -m unittest tests.test_run_game_online tests.test_seamless_lab_server`；
   `python -m unittest discover -s deploy/shadnet/portal -p test_server.py`；
-  在 `tools/embedded_net` 执行 `go test ./...`。这些验证代码、门户策略与桥，不替代双机游戏测试。
+  在 `tools/embedded_net` 执行 `go test ./...`。shadNet 镜像构建时还会编译并执行
+  `bloodborne_summon_broker` 回归测试。这些验证代码、门户策略与桥，不替代双机游戏测试。
+- 云端部署时先对比 `/opt/bbport-seamless` 现有源码和 Compose，只更新隔离项目的 shadNet
+  构建上下文与镜像；不要执行 `down -v`、不要重建传统 `online_remote` 项目。更新前保留旧的
+  `bbport-shadnet:seamless-lab` 镜像标记用于回滚，并以服务端日志确认 seamless 开关已启用。
 - 双机验收：两端使用不同联机 ID 和不同私网身份，分别记录 `100.64.0.x`；先验证传统在线，
   再验证 BBSC 登录、铃铛、实际 JoinRoom、传送、死亡、Boss、重连、长期游玩及存档完整性。
   对齐两端 `logs/run-*.log`、`logs/net-traffic-*.log`、`runtime/bbsc/logs/bbsc-mod-*.log`。
