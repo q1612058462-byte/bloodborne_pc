@@ -25,7 +25,9 @@ services:
     image: bbport-shadnet:remote
     restart: unless-stopped
     environment:
-      SHADNET_SEAMLESS: "false"
+      # Relax sign search/claim matching on the traditional endpoint. This does
+      # not install BBSC or make the traditional game session persistent.
+      SHADNET_SEAMLESS: "true"
       BBPORT_TRUST_TAILNET_STUN: "1"
     ports:
       - "127.0.0.1:31313:31313/tcp"

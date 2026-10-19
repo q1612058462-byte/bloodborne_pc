@@ -78,7 +78,8 @@ class OnlineOverridesTests(unittest.TestCase):
                       'BB_SHADNET_SERVER': '192.168.31.226:32313',
                       'BB_SHADNET_WEBAPI': 'http://192.168.31.226:32315',
                       'BB_COMMUNITY_SERVER': 'http://192.168.31.226:32443',
-                      'BBSC_RELAY': '192.168.31.226:32444'}
+                      'BBSC_RELAY': '192.168.31.226:32444',
+                      'SHADPS4_BBSC_SHARED_PROGRESS': '1'}
             empty_hash = hashlib.sha256(b'').hexdigest()
             fake_hashes = {name: empty_hash for name in run_game.BBSC_LAB_HASHES}
             with mock.patch.object(run_game, 'WINDOWS', True), mock.patch.dict(os.environ, values), \
