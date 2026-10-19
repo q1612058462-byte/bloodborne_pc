@@ -49,6 +49,10 @@ RUN cd /src && git apply --check /tmp/seamless-rejoin.patch \
 COPY patches/seamless-stale-claim.patch /tmp/seamless-stale-claim.patch
 RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-stale-claim.patch \
     && git apply --unidiff-zero /tmp/seamless-stale-claim.patch
+# In seamless mode, verify TargetUserId before trusting the request's SessionId.
+COPY patches/seamless-claim-target.patch /tmp/seamless-claim-target.patch
+RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-claim-target.patch \
+    && git apply --unidiff-zero /tmp/seamless-claim-target.patch
 # This pinned upstream version needs to retain the authenticated tailnet
 # source when Docker's loopback UDP port mapping rewrites the sender address.
 COPY overrides/stun_server.cpp /src/src/stun_server.cpp

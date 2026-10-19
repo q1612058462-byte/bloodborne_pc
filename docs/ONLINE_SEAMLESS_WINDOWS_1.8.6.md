@@ -86,6 +86,10 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
   如果客机在 Claim 后停止发送 `create`，原请求方也只能在两分钟租期内搜到该招募；到期后的
   Claim 会标记为 `expired`，普通 `delete` 不再延长旧记录寿命。这避免了旧记录在 15 分钟保留期内
   反复被搜到并产生冲突，但不会替没有再次摇铃的客机自动创建新招募。
+  [`seamless-claim-target.patch`](../deploy/shadnet/patches/seamless-claim-target.patch) 进一步处理
+  “搜索命中 1 条但 Claim 报 not-found”：当请求的 `SessionId` 属于房主自身已删除的招募时，
+  无缝模式会先用 `TargetUserId`/`TargetCharaId` 核对目标身份，再回退查找实际的客机招募。
+  传统模式的原有查找行为保持不变。
   服务端 `delete` 日志标明实际 `consumed/retained` 条数，HTTP 响应头也提供这两个数字；Claim
   冲突/找不到目标的结果写入日志和 `X-Bbport-Summon-Claim-Status` 响应头，游戏所需 JSON 响应不变。
   所有自动重置及诊断响应头均由 seamless 开关限定；未启用该开关的实例仍使用原匹配行为。
