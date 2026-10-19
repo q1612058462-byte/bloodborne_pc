@@ -1,5 +1,9 @@
 # Online seamless co-op: integration boundary (2026-10-16)
 
+> Historical prototype design. For the v1.8.6 Windows implementation, current
+> deployment boundaries and validation status, see
+> [ONLINE_SEAMLESS_WINDOWS_1.8.6.md](ONLINE_SEAMLESS_WINDOWS_1.8.6.md).
+
 ## Current truth
 
 The production server at `82.157.168.20` serves **traditional** co-op with
