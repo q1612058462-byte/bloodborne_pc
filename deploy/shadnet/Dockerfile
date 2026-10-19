@@ -45,6 +45,10 @@ RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
 COPY patches/seamless-rejoin.patch /tmp/seamless-rejoin.patch
 RUN cd /src && git apply --check /tmp/seamless-rejoin.patch \
     && git apply /tmp/seamless-rejoin.patch
+# Bound stale claims even when the guest stops advertising after the first claim.
+COPY patches/seamless-stale-claim.patch /tmp/seamless-stale-claim.patch
+RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-stale-claim.patch \
+    && git apply --unidiff-zero /tmp/seamless-stale-claim.patch
 # This pinned upstream version needs to retain the authenticated tailnet
 # source when Docker's loopback UDP port mapping rewrites the sender address.
 COPY overrides/stun_server.cpp /src/src/stun_server.cpp

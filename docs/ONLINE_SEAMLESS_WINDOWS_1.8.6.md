@@ -17,7 +17,8 @@
 - 2026-10-19 起传统节点可单独启用 shadNet 的宽松招募匹配（`SHADNET_SEAMLESS=true`）。
   这只放宽服务端的招募搜索/Claim 条件，不会把传统游戏会话变成 BBSC 的跨地图持久联机。
   当日云端两节点均已启用此开关，并部署含旧 Claim 两分钟兜底的同版 shadNet 镜像；
-  服务器健康检查、空命中清理诊断头已通过，仍需玩家实测反复加入。
+  服务器健康检查、空命中清理诊断头已通过。随后仅隔离 BBSC 节点升级了“不再展示超期
+  Claim”的补丁；传统节点保留原镜像。仍需玩家实测反复加入。
 - 此分支保存源代码和部署参考，**不含游戏文件、服务器账号数据、预授权密钥、玩家存档或已构建的
   安装 EXE**。云端实际的账号同步 watcher 和经服务器侧适配的 Compose 未纳入仓库；部署前须与
   `/opt/bbport-seamless` 的现有版本逐项核对，不能用仓库参考文件盲目覆盖。
@@ -78,9 +79,13 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
 - 云端现有账号同步 watcher 负责将传统账号供 BBSC 节点使用；本仓库没有它的源文件或服务定义。
   **这是从零重建服务端的缺口**。在取得并审查该实现前，不宣称仅靠本分支可以完整重建现有云端。
 - 隔离 shadNet 的 Docker 构建现在应用
-  [`seamless-rejoin.patch`](../deploy/shadnet/patches/seamless-rejoin.patch)，并在镜像构建时运行 broker
+  [`seamless-rejoin.patch`](../deploy/shadnet/patches/seamless-rejoin.patch) 和
+  [`seamless-stale-claim.patch`](../deploy/shadnet/patches/seamless-stale-claim.patch)，并在镜像构建时运行 broker
   状态回归测试。无缝模式中，一个已 Claim/Delivered 的招募即使不断收到 `create`，也只保留原 Claim
   最多 2 分钟；此后下一次 `create` 会重新开放招募。正常的跨地图准备与短时重复投递仍保留。
+  如果客机在 Claim 后停止发送 `create`，原请求方也只能在两分钟租期内搜到该招募；到期后的
+  Claim 会标记为 `expired`，普通 `delete` 不再延长旧记录寿命。这避免了旧记录在 15 分钟保留期内
+  反复被搜到并产生冲突，但不会替没有再次摇铃的客机自动创建新招募。
   服务端 `delete` 日志标明实际 `consumed/retained` 条数，HTTP 响应头也提供这两个数字；Claim
   冲突/找不到目标的结果写入日志和 `X-Bbport-Summon-Claim-Status` 响应头，游戏所需 JSON 响应不变。
   所有自动重置及诊断响应头均由 seamless 开关限定；未启用该开关的实例仍使用原匹配行为。
@@ -91,7 +96,8 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
   是针对固定版 BBSC 源码准备的客户端补丁：首次强制清理请求失败或缺少身份时，下一次招募会重试；
   对支持新诊断头的服务器记录实际 `consumed` 条数。**此补丁尚未编译进 DLL**，当前启动器仍校验
   并加载官方 DLL，不能宣称客户端重试已在现有安装包生效。独立部署服务端补丁只能在 Claim 已满
-  2 分钟且玩家再次发送招募时兜底；不能把 HTTP 200 单独当作“旧房间已删”的证据。
+  2 分钟且玩家再次发送招募时重新开放该招募；新服务端补丁还会在两分钟后隐藏没有重新发布的
+  旧招募。不能把 HTTP 200 单独当作“旧房间已删”的证据，也不能仅凭服务端 Claim 判定游戏已入房。
 - 公共无缝玩家列表已在 2026-10-19 按文件差异完成门户 `server.py` 与 Nginx
   `/v1/presence` 部署。由于 Nginx 单文件绑定会保留旧 inode，更换配置文件后实际重建了
   `proxy` 容器；仅热重载不足以使新路由生效。`.1`/`.2` 私网身份及数据卷均未更换。
@@ -112,6 +118,8 @@ BBSC 发放专用铃铛前要先备份存档。游戏运行中直接复制实时
 - 云端部署时先对比 `/opt/bbport-seamless` 现有源码和 Compose，只更新隔离项目的 shadNet
   构建上下文与镜像；不要执行 `down -v`、不要重建传统 `online_remote` 项目。更新前保留旧的
   `bbport-shadnet:seamless-lab` 镜像标记用于回滚，并以服务端日志确认 seamless 开关已启用。
+  2026-10-19 的旧 Claim 修复已在隔离节点使用候选镜像完成构建、broker 回归测试和健康检查；
+  旧镜像保留为 `bbport-shadnet:seamless-before-stale-20261019`，玩家反复加入仍待实测验收。
 - 双机验收：两端使用不同联机 ID 和不同私网身份，分别记录 `100.64.0.x`；先验证传统在线，
   再验证 BBSC 登录、铃铛、实际 JoinRoom、传送、死亡、Boss、重连、长期游玩及存档完整性。
   对齐两端 `logs/run-*.log`、`logs/net-traffic-*.log`、`runtime/bbsc/logs/bbsc-mod-*.log`。
