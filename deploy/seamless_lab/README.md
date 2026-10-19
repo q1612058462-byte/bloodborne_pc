@@ -59,8 +59,11 @@ left untouched and is not merged into the ordinary save automatically.
 The shadNet image applies `deploy/shadnet/patches/seamless-rejoin.patch` and
 runs its summon-broker regression test during the build. Only seamless mode
 reopens an advertisement when an old Claimed/Delivered claim is at least two
-minutes old and the owner posts the next `create`; the traditional mode is
-unchanged. The server logs actual delete `consumed/retained` counts and adds
+minutes old and the owner posts the next `create`; instances with
+`SHADNET_SEAMLESS=false` retain the original behavior. The 2026-10-19 cloud
+deployment also enabled relaxed matching on the separate traditional node,
+without adding BBSC game hooks there. The server logs actual delete
+`consumed/retained` counts and adds
 diagnostic response headers without changing Bloodborne's JSON reply. This is
 a server-side recovery path, not a rebuilt BBSC client DLL: the bundled DLL
 still does not retry a failed first cleanup. To inspect a suspected failure,

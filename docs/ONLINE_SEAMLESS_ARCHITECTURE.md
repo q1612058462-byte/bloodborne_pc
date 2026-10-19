@@ -3,6 +3,8 @@
 > Historical prototype design. For the v1.8.6 Windows implementation, current
 > deployment boundaries and validation status, see
 > [ONLINE_SEAMLESS_WINDOWS_1.8.6.md](ONLINE_SEAMLESS_WINDOWS_1.8.6.md).
+> The traditional server's `SHADNET_SEAMLESS=false` below describes the original
+> deployment; its later opt-in relaxed matching does not add BBSC game hooks.
 
 ## Current truth
 

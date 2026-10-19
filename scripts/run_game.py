@@ -363,7 +363,9 @@ def bbsc_lab_command(command, probe, runtime):
     os.environ['SHADPS4_BLOODBORNE_SEAMLESS_COOP'] = '0'  # BBSC DLL owns the game hooks.
     # The upstream test mod enables these by default. Do not alter the guest's
     # progression or publish play status on Discord during an unproven lab test.
-    os.environ.setdefault('SHADPS4_BBSC_SHARED_PROGRESS', '0')
+    # Shared progress writes the host's world flags into the guest's save.
+    # Keep it disabled even when an inherited environment enables the mod default.
+    os.environ['SHADPS4_BBSC_SHARED_PROGRESS'] = '0'
     os.environ.setdefault('SHADPS4_BBSC_DISCORD', '0')
     print(f'BBSC experimental mod: {dll} sha256={BBSC_LAB_HASHES[dll.name]} (isolated test server; current player save with backups)')
     return [launcher, '--emu', probe, '--dll', dll, '--cwd', ROOT, *command[1:]]

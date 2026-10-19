@@ -40,8 +40,8 @@ COPY patches/qt64-server-api.patch /tmp/qt64-server-api.patch
 RUN cd /src && git apply --unidiff-zero /tmp/qt64-server-api.patch
 COPY patches/online-stats.patch /tmp/online-stats.patch
 RUN cd /src && git apply --unidiff-zero /tmp/online-stats.patch
-# Keep a bounded claim lease and expose cleanup/claim diagnostics only in the
-# isolated seamless mode. The traditional server uses the original behavior.
+# Keep a bounded claim lease and expose cleanup/claim diagnostics only when
+# SHADNET_SEAMLESS is enabled. The traditional endpoint can opt in separately.
 COPY patches/seamless-rejoin.patch /tmp/seamless-rejoin.patch
 RUN cd /src && git apply --check /tmp/seamless-rejoin.patch \
     && git apply /tmp/seamless-rejoin.patch

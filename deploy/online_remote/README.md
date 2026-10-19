@@ -16,6 +16,15 @@ process before broad public release. The Headscale policy limits private
 traffic to bbport ports. Default public Tailscale DERP is still enabled:
 control-plane hosting is private, but relay is not fully self-hosted yet.
 
+The traditional endpoint now opts into shadNet's relaxed seamless summon
+matching. This changes sign discovery/claim handling, not the game's own
+session lifetime and not BBSC's game hooks. Its container, database, bridge
+and 100.64.0.1 identity remain separate from the BBSC node at 100.64.0.2.
+The public `/v1/presence` route accepts authenticated seamless-client
+heartbeats for the portal list. When replacing a host-mounted `nginx.conf`
+using an atomic file replacement, recreate `proxy`: an Nginx reload alone
+keeps Docker's bind mount on the old file inode.
+
 Initial provisioning (run from this directory on the remote Ubuntu host):
 
 1. Confirm the host firewall/security group allows inbound TCP 80/443. Never
