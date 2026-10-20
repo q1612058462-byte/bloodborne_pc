@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d0e12">
+  <meta name="description" content="Xiyuhanyan Windows BB Port 玩家论坛：交流联机经验，提交文字和图片反馈。">
+  <title>猎人议事厅 · Xiyuhanyan Windows BB Port</title>
+  <link rel="stylesheet" href="/windows/styles.css">
+  <link rel="stylesheet" href="/windows/forum/forum.css">
+  <script src="/windows/forum/forum.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#forum-main">跳转到讨论</a>
+  <header class="forum-header">
+    <nav class="shell forum-nav" aria-label="论坛导航">
+      <a class="brand" href="/windows/"><span class="brand-mark" aria-hidden="true">✦</span><span><strong>XIYUHANYAN</strong><small>WINDOWS BB PORT</small></span></a>
+      <div class="forum-nav-links"><a href="/windows/">项目首页</a><a href="/windows/forum/" aria-current="page">玩家论坛</a><a href="/windows/#faq">常见问题</a></div>
+      <button id="account-button" class="forum-account" type="button">登录 / 注册</button>
+    </nav>
+  </header>
+
+  <main id="forum-main">
+    <section class="forum-hero">
+      <div class="forum-hero-art" aria-hidden="true"></div>
+      <div class="shell forum-hero-inner">
+        <p class="kicker">猎人议事厅 / HUNTERS' FORUM</p>
+        <h1>在篝火旁，<br><em>留下你的发现。</em></h1>
+        <p>联机求助、游戏体验、建议与问题反馈。可以附上截图，也可以继续回复其他猎人的讨论。</p>
+        <div class="forum-hero-actions"><button id="new-thread-button" class="button button-primary" type="button">发起讨论 <span aria-hidden="true">→</span></button><a class="button button-ghost" href="#forum-rules">发帖须知</a></div>
+      </div>
+    </section>
+
+    <div class="shell forum-layout">
+      <section class="forum-content" aria-labelledby="forum-title">
+        <div class="forum-toolbar"><div><p class="kicker">COMMUNITY</p><h2 id="forum-title">所有讨论</h2></div><button id="my-threads-button" class="text-link" type="button" hidden>我的帖子</button></div>
+        <div class="forum-filters" role="group" aria-label="按分类筛选">
+          <button type="button" data-category="" class="active">全部</button><button type="button" data-category="求助">求助</button><button type="button" data-category="联机">联机</button><button type="button" data-category="建议">建议</button><button type="button" data-category="闲聊">闲聊</button>
+        </div>
+        <form id="search-form" class="forum-search"><label for="search-box">搜索讨论</label><input id="search-box" type="search" maxlength="80" placeholder="输入标题或正文关键词"><button type="submit">搜索</button></form>
+        <div id="forum-notice" class="forum-notice" role="status" aria-live="polite"></div>
+        <div id="thread-list" class="thread-list" aria-live="polite"></div>
+        <article id="thread-detail" class="thread-detail" hidden></article>
+        <section id="composer" class="forum-composer" hidden aria-labelledby="composer-title">
+          <div class="section-heading"><h2 id="composer-title">发起讨论</h2><button id="composer-close" type="button">返回讨论</button></div>
+          <form id="thread-form">
+            <label for="thread-category">分类</label><select id="thread-category" required><option value="求助">求助</option><option value="联机">联机</option><option value="建议">建议</option><option value="闲聊">闲聊</option></select>
+            <label for="thread-title">标题</label><input id="thread-title" required minlength="5" maxlength="100" placeholder="用一句话说明问题或话题">
+            <label for="thread-body">内容</label><textarea id="thread-body" required minlength="10" maxlength="5000" rows="9" placeholder="描述复现步骤、游戏版本及发生时间；不要发布密码、密钥或完整个人信息。"></textarea>
+            <label for="thread-images">截图（可选，最多两张）</label><input id="thread-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+            <p class="input-hint">每张不超过 3 MB，支持 PNG / JPEG / WebP；上传后会统一转换格式并去除常见照片元数据。新账号首帖需审核。</p>
+            <button class="button button-primary" type="submit">提交讨论</button>
+          </form>
+        </section>
+        <section id="moderation" class="moderation" hidden><div class="section-heading"><h2>待审核内容</h2><button id="moderation-refresh" type="button">刷新</button></div><div id="moderation-list"></div></section>
+      </section>
+      <aside class="forum-sidebar">
+        <div class="sidebar-card" id="forum-rules"><span class="sidebar-no">01 / 发帖须知</span><h3>让问题更容易被解决</h3><p>请写清启动器版本、使用的联机模式、发生时间与复现步骤。截图可以遮盖联机 ID、QQ 号和其他私人信息。</p><p>不要上传游戏本体、存档、密钥或他人的私人资料。交流时保持友善。</p></div>
+        <div class="sidebar-card"><span class="sidebar-no">02 / 账号与审核</span><h3>单独的论坛账号</h3><p>论坛昵称和密码只用于发帖，不是联机账号。讨论公开可读；新账号的首帖经管理员审核后展示。</p></div>
+        <a class="sidebar-back" href="/windows/">← 返回 Windows 项目首页</a>
+      </aside>
+    </div>
+  </main>
+
+  <dialog id="auth-dialog" class="auth-dialog" aria-labelledby="auth-title"><form method="dialog" class="auth-close-form"><button aria-label="关闭" type="submit">×</button></form><h2 id="auth-title">进入议事厅</h2><p>论坛账号与游戏联机账号相互独立。</p><div class="auth-tabs"><button id="login-tab" class="active" type="button">登录</button><button id="register-tab" type="button">注册</button></div><form id="auth-form"><label for="auth-nickname">昵称</label><input id="auth-nickname" name="nickname" required minlength="2" maxlength="24" autocomplete="username"><label for="auth-password">密码</label><input id="auth-password" name="password" type="password" required minlength="10" maxlength="128" autocomplete="current-password"><p id="auth-error" role="alert"></p><button id="auth-submit" class="button button-primary" type="submit">登录</button></form></dialog>
+</body>
+</html>

@@ -565,6 +565,18 @@ static class SaveTools {
 
 sealed class MainForm : Form {
     const string TitleText = "Bloodborne PC 中文安装与启动器";
+    static readonly Color ThemeBackground = Color.FromArgb(13, 14, 18);
+    static readonly Color ThemePanel = Color.FromArgb(24, 24, 29);
+    static readonly Color ThemeInput = Color.FromArgb(31, 32, 38);
+    static readonly Color ThemeButton = Color.FromArgb(43, 39, 42);
+    static readonly Color ThemeBorder = Color.FromArgb(91, 77, 73);
+    static readonly Color ThemeText = Color.FromArgb(233, 227, 219);
+    static readonly Color ThemeMuted = Color.FromArgb(169, 160, 153);
+    static readonly Color ThemeGold = Color.FromArgb(215, 173, 119);
+    static readonly Color ThemeAccent = Color.FromArgb(172, 55, 51);
+    static readonly Color ThemeSuccess = Color.FromArgb(142, 198, 151);
+    static readonly Color ThemeWarning = Color.FromArgb(226, 180, 112);
+    static readonly Color ThemeDanger = Color.FromArgb(229, 122, 117);
     const string PayloadResource = "bbport_payload.zip";
     const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
@@ -830,7 +842,9 @@ sealed class MainForm : Form {
         stateFile = Path.Combine(stateDir, "launcher.ini");
         welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
-        Font = SystemFonts.MessageBoxFont;
+        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
+        BackColor = ThemeBackground;
+        ForeColor = ThemeText;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(S(800), S(730));
         MinimumSize = new Size(S(680), S(580));
@@ -865,7 +879,9 @@ sealed class MainForm : Form {
 
     void BuildUi() {
         Image background = LauncherBackground();
-        tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs = new TabControl { Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed,
+            BackColor = ThemeBackground, ForeColor = ThemeText };
+        tabs.DrawItem += DrawNavigationTab;
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
@@ -901,12 +917,6 @@ sealed class MainForm : Form {
             }
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
         };
-        if (background != null) {
-            foreach (TabPage page in tabs.TabPages) {
-                page.BackgroundImage = background;
-                page.BackgroundImageLayout = ImageLayout.Stretch;
-            }
-        }
         TableLayoutPanel column = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
         column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1096,7 +1106,7 @@ sealed class MainForm : Form {
         TableLayoutPanel onlineOverview = Group(PublicServiceIsLoopback() ? "本机 Docker 测试服务" : "公共在线服务", 2);
         if (PublicServiceIsLoopback()) {
             Label localOnly = Note("当前是本机 Docker 测试包：127.0.0.1 指这台电脑。另一台电脑运行同一个包，只会连接它自己，不能用于异地联机。");
-            localOnly.ForeColor = Color.Firebrick;
+            localOnly.ForeColor = ThemeDanger;
             AddSpan(onlineOverview, localOnly);
         }
         onlineServiceStatus = Note("服务状态：尚未检测");
@@ -1225,6 +1235,7 @@ sealed class MainForm : Form {
         AddSpan(onlineAdvanced, Note("本测试服务自动批准有效申请；QQ 号仅用于去重和频率统计，服务器只保存不可逆摘要及末四位，不公开 QQ 原文。切勿与朋友共用联机 ID。"));
         AddSpan(onlineAdvanced, Link("打开作者主页，查看互助与账号申请方式", "https://space.bilibili.com/18955882?spm_id_from=333.40164.0.0"));
         AddSpan(onlineAdvanced, Note("交流 QQ 群：945992968（一群，已满）；892729104（二群，可加千人群讨论）。入群问题答案：细雨寒言。"));
+        AddSpan(onlineAdvanced, Link("玩家论坛：上传截图、提交问题与交流联机经验", "https://82.157.168.20/windows/forum/"));
         AddSpan(onlineAdvanced, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
             (PublicServiceIsLoopback() ? "本机 Docker 测试包不能供异地玩家直接联机。" : "")));
         AddSpan(onlineAdvanced, Note("在线人数以服务端实际返回为准；公开列表只展示同意公开的在线玩家，QQ 号不会出现在列表中。"));
@@ -1487,7 +1498,7 @@ sealed class MainForm : Form {
             Font = new Font(Font.FontFamily, 12f, FontStyle.Bold), Padding = new Padding(0, 0, 0, S(4)),
             Text = "当前安装包版本：v" + (PackageVersion.Length == 0 ? "未知" : PackageVersion) };
         Label versionHint = new Label { AutoSize = true, Dock = DockStyle.Fill,
-            ForeColor = SystemColors.GrayText, Padding = new Padding(0, 0, 0, S(8)),
+            ForeColor = ThemeMuted, Padding = new Padding(0, 0, 0, S(8)),
             Text = "最新版本置顶；每条改动单独显示，向下滚动可查看历次更新。" };
         RichTextBox notes = new RichTextBox { ReadOnly = true,
             ScrollBars = RichTextBoxScrollBars.Vertical, WordWrap = true, Dock = DockStyle.Fill,
@@ -1504,6 +1515,7 @@ sealed class MainForm : Form {
         logPage.Controls.Add(logBox);
 
         TableLayoutPanel bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, ColumnCount = 1, AutoSize = true,
+            Tag = "footer",
             Padding = new Padding(S(8), S(4), S(8), S(8)) };
         statusLabel = new Label { AutoSize = true, Text = "请选择游戏本体目录，然后安装运行环境。" };
         progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(14), Style = ProgressBarStyle.Continuous };
@@ -1523,17 +1535,95 @@ sealed class MainForm : Form {
         Controls.Add(tabs);
         Controls.Add(bottom);
         if (background != null) {
-            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(112), BackgroundImage = background,
+            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(124), BackgroundImage = background,
+                Tag = "hero",
                 BackgroundImageLayout = ImageLayout.Zoom, BackColor = Color.FromArgb(15, 18, 24) };
             Label heroText = new Label { AutoSize = true, BackColor = Color.FromArgb(170, 8, 10, 14),
-                ForeColor = Color.WhiteSmoke, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold),
-                Text = "  猎人之夜 · Bloodborne PC  ", Location = new Point(S(18), S(68)),
-                Padding = new Padding(S(6), S(4), S(6), S(4)) };
+                ForeColor = ThemeText, Font = new Font(Font.FontFamily, 17f, FontStyle.Bold),
+                Text = "  XIYUHANYAN  ·  猎人之夜  ", Location = new Point(S(18), S(70)),
+                Padding = new Padding(S(9), S(5), S(9), S(5)) };
             hero.Controls.Add(heroText);
             Controls.Add(hero);
         }
+        ApplyTheme(this);
         AcceptButton = installButton;
         UpdateButtons();
+    }
+
+    void DrawNavigationTab(object sender, DrawItemEventArgs e) {
+        if (e.Index < 0 || e.Index >= tabs.TabPages.Count) return;
+        bool selected = e.Index == tabs.SelectedIndex;
+        Rectangle rect = tabs.GetTabRect(e.Index);
+        using (Brush fill = new SolidBrush(selected ? ThemePanel : ThemeBackground))
+            e.Graphics.FillRectangle(fill, rect);
+        if (selected) using (Brush accent = new SolidBrush(ThemeAccent))
+            e.Graphics.FillRectangle(accent, rect.Left + S(2), rect.Bottom - S(3), rect.Width - S(4), S(3));
+        TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, Font, rect,
+            selected ? ThemeGold : ThemeMuted,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    void ApplyTheme(Control control) {
+        if ("hero".Equals(control.Tag)) return;
+        TabPage page = control as TabPage;
+        GroupBox group = control as GroupBox;
+        Button button = control as Button;
+        if (page != null) {
+            page.BackColor = ThemeBackground;
+            page.ForeColor = ThemeText;
+            page.BackgroundImage = null;
+            page.Padding = new Padding(S(14));
+        } else if (group != null) {
+            group.BackColor = ThemePanel;
+            group.ForeColor = ThemeGold;
+            group.Padding = new Padding(S(14), S(10), S(14), S(14));
+            group.Margin = new Padding(0, 0, 0, S(12));
+        } else if (button != null) {
+            bool primary = button == playButton || button == seamlessQuickButton ||
+                button == onlineQuickButton || button == lanLaunchButton;
+            button.FlatStyle = FlatStyle.Flat;
+            button.UseVisualStyleBackColor = false;
+            button.BackColor = primary ? ThemeAccent : ThemeButton;
+            button.ForeColor = ThemeText;
+            button.FlatAppearance.BorderColor = primary ? ThemeAccent : ThemeBorder;
+            button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(197, 68, 62) : Color.FromArgb(62, 54, 53);
+            button.FlatAppearance.MouseDownBackColor = ThemeAccent;
+            button.Padding = new Padding(S(8), S(4), S(8), S(4));
+        } else if (control is LinkLabel) {
+            LinkLabel link = (LinkLabel)control;
+            link.LinkColor = ThemeGold;
+            link.ActiveLinkColor = ThemeText;
+            link.VisitedLinkColor = ThemeGold;
+            link.BackColor = Color.Transparent;
+        } else if (control is Label) {
+            Label label = (Label)control;
+            label.BackColor = Color.Transparent;
+            if (label.ForeColor == SystemColors.GrayText) label.ForeColor = ThemeMuted;
+            else if (label.ForeColor == SystemColors.ControlText) label.ForeColor = ThemeText;
+        } else if (control is RichTextBox || control is TextBox) {
+            TextBoxBase input = (TextBoxBase)control;
+            input.BackColor = ThemeInput;
+            input.ForeColor = ThemeText;
+            input.BorderStyle = BorderStyle.FixedSingle;
+        } else if (control is ComboBox) {
+            ComboBox combo = (ComboBox)control;
+            combo.FlatStyle = FlatStyle.Flat;
+            combo.BackColor = ThemeInput;
+            combo.ForeColor = ThemeText;
+        } else if (control is NumericUpDown) {
+            control.BackColor = ThemeInput;
+            control.ForeColor = ThemeText;
+        } else if (control is ListView) {
+            control.BackColor = ThemeInput;
+            control.ForeColor = ThemeText;
+        } else if (control is CheckBox || control is RadioButton) {
+            control.BackColor = Color.Transparent;
+            control.ForeColor = ThemeText;
+        } else if (control is TableLayoutPanel || control is FlowLayoutPanel) {
+            control.BackColor = "footer".Equals(control.Tag) ? ThemePanel : Color.Transparent;
+            control.ForeColor = ThemeText;
+        }
+        foreach (Control child in control.Controls) ApplyTheme(child);
     }
 
     void ApplyQualityProfile(string profile) {
@@ -1657,7 +1747,7 @@ sealed class MainForm : Form {
         source.EnabledChanged += delegate { target.Enabled = source.Enabled; };
         target.Enabled = source.Enabled;
     }
-    Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = SystemColors.GrayText,
+    Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = ThemeMuted,
         MaximumSize = new Size(S(710), 0), Margin = new Padding(0, S(2), 0, S(6)) }; }
     LinkLabel Link(string title, string url) {
         LinkLabel link = new LinkLabel { Text = title, AutoSize = true,
@@ -2357,7 +2447,7 @@ sealed class MainForm : Form {
                 onlineRefreshButton.Enabled = true;
                 seamlessRefreshButton.Enabled = true;
                 onlineServiceStatus.Text = "服务状态：" + message;
-                onlineServiceStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                onlineServiceStatus.ForeColor = ok ? ThemeSuccess : ThemeDanger;
                 seamlessServiceStatus.Text = onlineServiceStatus.Text;
                 seamlessServiceStatus.ForeColor = onlineServiceStatus.ForeColor;
                 onlineCountStatus.Text = "在线人数：" + (count < 0 ? "暂不可用" : count.ToString()) +
@@ -2415,7 +2505,7 @@ sealed class MainForm : Form {
                 throw new FileNotFoundException("未找到内置私网组件。请先安装／更新运行环境。", executable);
             if (!guided) CheckHeadscaleHealth(control);
             onlineHeadscaleStatus.Text = "自建私网控制服务：可连接（仅确认控制端健康）";
-            onlineHeadscaleStatus.ForeColor = Color.DarkGreen;
+            onlineHeadscaleStatus.ForeColor = ThemeSuccess;
             if (!guided) {
                 DialogResult choice = MessageBox.Show(this,
                     "将启动随启动器附带的独立私网节点。首次入网将使用已注册的在线账号自动申请一次性设备凭据；" +
@@ -2549,10 +2639,10 @@ sealed class MainForm : Form {
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             onlineHeadscaleStatus.Text = "自建私网：正在自动验证设备。";
-            onlineHeadscaleStatus.ForeColor = Color.DarkOrange;
+            onlineHeadscaleStatus.ForeColor = ThemeWarning;
         } catch (Exception e) {
             onlineHeadscaleStatus.Text = "自建私网：连接准备失败（" + e.Message + "）";
-            onlineHeadscaleStatus.ForeColor = Color.Firebrick;
+            onlineHeadscaleStatus.ForeColor = ThemeDanger;
             if (guided) FailGuidedOnline("无法启动内置私网连接：" + e.Message);
             else MessageBox.Show(this, "无法启动内置私网连接：" + e.Message,
                     "自建私网", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -2618,9 +2708,9 @@ sealed class MainForm : Form {
                 }
             } else if (state == "error") {
                 onlineTailscaleStatus.Text = "内置私网：连接失败（" + error + "）";
-                onlineTailscaleStatus.ForeColor = Color.Firebrick;
+                onlineTailscaleStatus.ForeColor = ThemeDanger;
                 seamlessNetworkStatus.Text = onlineTailscaleStatus.Text;
-                seamlessNetworkStatus.ForeColor = Color.Firebrick;
+                seamlessNetworkStatus.ForeColor = ThemeDanger;
                 if (onlineSetupWaitingForNet) FailGuidedOnline("内置私网连接失败：" + error);
             } else {
                 RefreshTailscaleStatus();
@@ -2634,7 +2724,7 @@ sealed class MainForm : Form {
         onlineTailscaleStatus.Text = ready ? "内置私网：已连接，节点 " + embeddedNetIp :
             embeddedNetProcess != null && !embeddedNetProcess.HasExited ? "内置私网：等待授权或分配地址" :
             "内置私网：未连接";
-        onlineTailscaleStatus.ForeColor = ready ? Color.DarkGreen : Color.DarkOrange;
+        onlineTailscaleStatus.ForeColor = ready ? ThemeSuccess : ThemeWarning;
         seamlessNetworkStatus.Text = onlineTailscaleStatus.Text;
         seamlessNetworkStatus.ForeColor = onlineTailscaleStatus.ForeColor;
     }
@@ -2703,7 +2793,7 @@ sealed class MainForm : Form {
     void GuidedOnlineStatus(string message) {
         Label target = guidedSeamless ? seamlessSetupStatus : onlineSetupStatus;
         target.Text = "准备状态：" + message;
-        target.ForeColor = Color.DarkOrange;
+        target.ForeColor = ThemeWarning;
         Log((guidedSeamless ? "在线无缝联机" : "在线联机") + "准备：" + message);
     }
 
@@ -2714,7 +2804,7 @@ sealed class MainForm : Form {
         SetGuidedOnlineBusy(false);
         Label target = guidedSeamless ? seamlessSetupStatus : onlineSetupStatus;
         target.Text = "准备状态：未完成——" + message;
-        target.ForeColor = Color.Firebrick;
+        target.ForeColor = ThemeDanger;
         Log((guidedSeamless ? "在线无缝联机" : "在线联机") + "准备失败：" + message);
         MessageBox.Show(this, message, guidedSeamless ? "在线无缝联机准备失败" : "在线联机准备失败",
             MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -2898,7 +2988,7 @@ sealed class MainForm : Form {
                 SetGuidedOnlineBusy(false);
                 Label target = seamless ? seamlessSetupStatus : onlineSetupStatus;
                 target.Text = "准备状态：账号、私网和游戏服务已就绪，正在启动游戏。";
-                target.ForeColor = Color.DarkGreen;
+                target.ForeColor = ThemeSuccess;
                 StartGame();
             });
         }));
@@ -3083,7 +3173,7 @@ sealed class MainForm : Form {
             BeginInvoke((Action)delegate {
                 lanTestButton.Enabled = !busy;
                 lanStatus.Text = message;
-                lanStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                lanStatus.ForeColor = ok ? ThemeSuccess : ThemeDanger;
             });
         }));
         worker.IsBackground = true;
@@ -3202,7 +3292,7 @@ sealed class MainForm : Form {
             BeginInvoke((Action)delegate {
                 lanRegisterButton.Enabled = !busy;
                 lanStatus.Text = message;
-                lanStatus.ForeColor = ok ? Color.DarkGreen : Color.Firebrick;
+                lanStatus.ForeColor = ok ? ThemeSuccess : ThemeDanger;
                 if (ok) statusLabel.Text = "shadNet 账号已注册，请保存设置后启动局域网游戏。";
             });
         }));
@@ -3235,7 +3325,7 @@ sealed class MainForm : Form {
 
     void SetGameStatus(string text, bool warning) {
         gameStatus.Text = text;
-        gameStatus.ForeColor = warning ? Color.Firebrick : SystemColors.GrayText;
+        gameStatus.ForeColor = warning ? ThemeDanger : ThemeMuted;
     }
 
     void UpdateLabModeAvailability() {
@@ -3649,7 +3739,7 @@ sealed class MainForm : Form {
                     saveStatus.Text = string.Format("当前存档：{0}，{1} 个数据文件，{2:N1} MB，最后修改 {3}",
                         current.TitleId.Length == 0 ? "区域未知" : current.TitleId, current.DataFiles,
                         current.Bytes / 1048576.0, current.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
-                    saveStatus.ForeColor = SystemColors.GrayText;
+                    saveStatus.ForeColor = ThemeMuted;
                     if (characterList != null) {
                         foreach (SaveCharacter character in SaveTools.ListCharacters(root)) {
                             ListViewItem row = new ListViewItem((character.Index + 1).ToString());
@@ -3662,11 +3752,11 @@ sealed class MainForm : Form {
                     }
                 } catch (Exception e) {
                     saveStatus.Text = "存档目录存在，但校验未通过：" + e.Message;
-                    saveStatus.ForeColor = Color.Firebrick;
+                    saveStatus.ForeColor = ThemeDanger;
                 }
             } else {
                 saveStatus.Text = "独立目录中还没有存档；首次启动会自动迁移旧运行环境的存档。";
-                saveStatus.ForeColor = SystemColors.GrayText;
+                saveStatus.ForeColor = ThemeMuted;
             }
             string backups = SaveTools.BackupRoot(root);
             if (Directory.Exists(backups)) {
@@ -3682,7 +3772,7 @@ sealed class MainForm : Form {
             }
         } catch (Exception e) {
             saveStatus.Text = "读取存档失败：" + e.Message;
-            saveStatus.ForeColor = Color.Firebrick;
+            saveStatus.ForeColor = ThemeDanger;
         }
         restoreButton.Enabled = !busy && backupList.SelectedItems.Count > 0;
         if (renameCharacterButton != null)
@@ -3838,20 +3928,20 @@ sealed class MainForm : Form {
             int length = lines[i].Length;
             notes.Select(start, length);
             notes.SelectionFont = bodyFont;
-            notes.SelectionColor = SystemColors.WindowText;
-            notes.SelectionBackColor = SystemColors.Window;
+            notes.SelectionColor = ThemeText;
+            notes.SelectionBackColor = ThemeInput;
             notes.SelectionIndent = 0;
             notes.SelectionRightIndent = 0;
 
             if (i == 0) {
                 notes.SelectionFont = titleFont;
-                notes.SelectionColor = Color.FromArgb(88, 24, 24);
+                notes.SelectionColor = ThemeGold;
             } else if (Regex.IsMatch(lines[i], @"^v\d+\.\d+\.\d+")) {
                 notes.SelectionFont = headingFont;
                 bool current = PackageVersion.Length > 0 && lines[i].StartsWith("v" + PackageVersion,
                     StringComparison.OrdinalIgnoreCase);
-                notes.SelectionColor = current ? Color.FromArgb(142, 42, 34) : Color.FromArgb(45, 75, 110);
-                if (current) notes.SelectionBackColor = Color.FromArgb(255, 248, 225);
+                notes.SelectionColor = current ? ThemeGold : ThemeMuted;
+                if (current) notes.SelectionBackColor = Color.FromArgb(58, 37, 38);
             } else if (lines[i].StartsWith("- ", StringComparison.Ordinal)) {
                 notes.SelectionIndent = S(14);
                 notes.SelectionRightIndent = S(8);
@@ -4367,13 +4457,13 @@ sealed class MainForm : Form {
                         publicLoginSucceeded = true;
                         if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
                             onlineLoginStatus.Text = "登录状态：已登录（" + options.LanNpid + "）";
-                            onlineLoginStatus.ForeColor = Color.DarkGreen;
+                            onlineLoginStatus.ForeColor = ThemeSuccess;
                         });
                     } else if (line.IndexOf("shadNet authentication failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
                         line.IndexOf("Login rejected", StringComparison.OrdinalIgnoreCase) >= 0) {
                         if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
                             onlineLoginStatus.Text = "登录状态：认证失败，请检查账号、密码和日志";
-                            onlineLoginStatus.ForeColor = Color.Firebrick;
+                            onlineLoginStatus.ForeColor = ThemeDanger;
                         });
                     }
                 }
@@ -4503,7 +4593,7 @@ sealed class MainForm : Form {
         if (currentRunPublic) {
             onlineLoginStatus.Text = publicLoginSucceeded
                 ? "登录状态：未登录（上次游戏中认证成功）" : "登录状态：未登录（上次未完成认证）";
-            onlineLoginStatus.ForeColor = publicLoginSucceeded ? SystemColors.GrayText : Color.Firebrick;
+            onlineLoginStatus.ForeColor = publicLoginSucceeded ? ThemeMuted : ThemeDanger;
             currentRunPublic = false;
         }
         progress.Style = ProgressBarStyle.Continuous;

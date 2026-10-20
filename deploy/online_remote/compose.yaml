@@ -83,6 +83,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  forum:
+    build: ./forum
+    image: bbport-forum:remote
+    restart: unless-stopped
+    read_only: true
+    environment:
+      FORUM_ORIGIN: https://82.157.168.20
+    volumes:
+      - forum-data:/var/lib/forum
+    tmpfs:
+      - /tmp
+    mem_limit: 384m
+    pids_limit: 100
+    security_opt:
+      - no-new-privileges:true
+
   proxy:
     image: nginx:stable-alpine
     restart: unless-stopped
@@ -90,6 +106,7 @@ services:
       - headscale
       - portal
       - windows-site
+      - forum
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
@@ -150,6 +167,7 @@ volumes:
   headscale-data:
   shadnet-data:
   portal-data:
+  forum-data:
   letsencrypt:
   acme:
   bridge-state:
