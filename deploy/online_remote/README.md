@@ -9,6 +9,12 @@ Game ports 31313/TCP, 31314/UDP, 31315/TCP and portal 18080/TCP bind to
 The bootstrap portal and Headscale share `https://82.157.168.20`. The Nginx
 proxy exposes only registration/status/device-key routes from the portal and
 blocks its administrator routes. Headscale's administrator API is not proxied.
+The independent Chinese Windows information site is mounted at
+`https://82.157.168.20/windows/` and reads only the existing public
+`/v1/status` endpoint. It has no account or administrator access. Start
+`windows-site` before testing/reloading the updated proxy configuration;
+the service has no published host port. Keep `/v1/` routing ahead of the
+`/windows/` location and never expose raw game ports to the public Internet.
 The portal automatically approves unverified QQ/nickname applications, as
 requested for this trial; that is **not identity verification**. Limit the
 number of testers, monitor abuse, and replace with a verified registration
