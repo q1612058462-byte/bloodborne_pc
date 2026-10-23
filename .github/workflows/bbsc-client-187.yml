@@ -17,12 +17,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch pinned upstream source and submodules
+      - name: Fetch pinned upstream source and required headers
         shell: pwsh
         run: |
-          git clone --branch v0.0.2 --single-branch --recursive https://github.com/CLSAMG22/BBSC.git "$env:RUNNER_TEMP\bbsc-002"
+          git clone --depth 1 --branch v0.0.2 --single-branch https://github.com/CLSAMG22/BBSC.git "$env:RUNNER_TEMP\bbsc-002"
           $sha = git -C "$env:RUNNER_TEMP\bbsc-002" rev-parse HEAD
           if ($sha -ne '4f11faf88b6ba658ebde6fe5fbefdadedba4fa41') { throw "Unexpected BBSC source commit: $sha" }
+          git -C "$env:RUNNER_TEMP\bbsc-002" submodule update --init --depth 1 emulator/externals/fmt emulator/externals/xbyak
       - name: Apply Windows 1.8.7 fixes
         shell: pwsh
         run: git -C "$env:RUNNER_TEMP\bbsc-002" apply "$env:GITHUB_WORKSPACE\deploy\seamless_lab\patches\bbsc-0.0.2-client-1.8.7.patch"
