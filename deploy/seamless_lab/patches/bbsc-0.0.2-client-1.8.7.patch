@@ -1,0 +1,282 @@
+diff --git a/emulator/mod/bbsc_http.cpp b/emulator/mod/bbsc_http.cpp
+index d62389c..7a484da 100644
+--- a/emulator/mod/bbsc_http.cpp
++++ b/emulator/mod/bbsc_http.cpp
+@@ -40,6 +40,7 @@
+ #include <array>
+ #include <atomic>
+ #include <cctype>
++#include <cwchar>
+ #include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
+@@ -303,8 +304,13 @@ std::string JsonNumber(const std::string& body, const char* key) {
+     return body.substr(at + needle.size(), end - at - needle.size());
+ }
+ 
+-// One plain POST with WinHTTP (the stale-record delete). Returns the status code, 0 on failure.
+-DWORD Post(const std::string& url, const std::string& body) {
++struct CleanupPostResult {
++    DWORD status = 0;
++    int consumed = -1; // Older brokers do not send the diagnostic header.
++};
++
++// One plain POST with WinHTTP (the stale-record delete).
++CleanupPostResult Post(const std::string& url, const std::string& body) {
+     std::wstring wide(url.begin(), url.end());
+     URL_COMPONENTS parts{sizeof(parts)};
+     wchar_t host[256]{};
+@@ -314,9 +320,9 @@ DWORD Post(const std::string& url, const std::string& body) {
+     parts.lpszUrlPath = path;
+     parts.dwUrlPathLength = 2048;
+     if (!WinHttpCrackUrl(wide.c_str(), 0, 0, &parts)) {
+-        return 0;
++        return {};
+     }
+-    DWORD status = 0;
++    CleanupPostResult result;
+     HINTERNET session = WinHttpOpen(L"BBSC", WINHTTP_ACCESS_TYPE_NO_PROXY, nullptr, nullptr, 0);
+     HINTERNET connect = session ? WinHttpConnect(session, host, parts.nPort, 0) : nullptr;
+     HINTERNET request =
+@@ -331,9 +337,16 @@ DWORD Post(const std::string& url, const std::string& body) {
+                                const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
+                                static_cast<DWORD>(body.size()), 0) &&
+             WinHttpReceiveResponse(request, nullptr)) {
+-            DWORD size = sizeof(status);
++            DWORD size = sizeof(result.status);
+             WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+-                                nullptr, &status, &size, nullptr);
++                                nullptr, &result.status, &size, nullptr);
++            wchar_t count[32]{};
++            size = sizeof(count);
++            if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM,
++                                    L"X-Bbport-Summon-Consumed", count, &size, nullptr) &&
++                count[0] >= L'0' && count[0] <= L'9') {
++                result.consumed = static_cast<int>(std::wcstol(count, nullptr, 10));
++            }
+         }
+     }
+     for (HINTERNET h : {request, connect, session}) {
+@@ -341,7 +354,7 @@ DWORD Post(const std::string& url, const std::string& body) {
+             WinHttpCloseHandle(h);
+         }
+     }
+-    return status;
++    return result;
+ }
+ 
+ // The broker keeps Preparing/Claimed/Delivered records 15 minutes and Bloodborne reuses its
+@@ -353,6 +366,8 @@ void ClearStaleRecord(const std::string& url, const std::string& body) {
+     const std::string session = JsonString(body, "SessionId");
+     const std::string user = JsonNumber(body, "UserId");
+     if (session.empty() || user.empty()) {
++        stale_cleared = false;
++        LOG_WARNING(Mod, "HTTP: stale summon cleanup has no session/user; retry on next sign");
+         return;
+     }
+     std::string removal_url = url;
+@@ -362,11 +377,20 @@ void ClearStaleRecord(const std::string& url, const std::string& body) {
+                                 session + "\",\"UserId\":" + user + ",\"Force\":true}";
+     // It must finish before the new sign is created (the delete names the same session), so it
+     // stays on this thread - the game's - with short timeouts (2026-10-08: up to 14 s before).
+-    const DWORD status = Post(removal_url, removal);
+-    LOG_INFO(Mod, "HTTP: stale summon cleanup for session {} user {}: status {}", session, user,
+-             status);
+-    BBSC_TIMELINE("JOIN", "HTTP: stale summon cleanup for session {} user {}: status {}", session, user,
+-             status);
++    const CleanupPostResult result = Post(removal_url, removal);
++    if (result.status != 200) {
++        stale_cleared = false;
++        LOG_WARNING(Mod, "HTTP: stale summon cleanup for session {} user {} failed (status {}); "
++                         "retry on next sign", session, user, result.status);
++        BBSC_TIMELINE("JOIN", "stale summon cleanup failed (status {}); retry on next sign",
++                      result.status);
++        return;
++    }
++    LOG_INFO(Mod, "HTTP: stale summon cleanup for session {} user {}: status {}, consumed {} "
++                  "(-1 means broker did not report a count)", session, user, result.status,
++             result.consumed);
++    BBSC_TIMELINE("JOIN", "stale summon cleanup status {}, consumed {}", result.status,
++                  result.consumed);
+ }
+ 
+ // ---- Stuck claims (2026-10-06) -------------------------------------------------------------------
+diff --git a/emulator/src/core/bloodborne_re.cpp b/emulator/src/core/bloodborne_re.cpp
+index 6c278c3..5372172 100644
+--- a/emulator/src/core/bloodborne_re.cpp
++++ b/emulator/src/core/bloodborne_re.cpp
+@@ -4312,6 +4312,7 @@ std::atomic<s32> bbsc_relay_session_state{-1}; // GetSessionState() as of the la
+ // Drops every world-flag snapshot received so far: they belong to the host we just let go (see
+ // "World state when warping together"; a neighbour block's snapshot was used for up to 2 minutes).
+ void ClearBbscHostWorldSnapshots();
++void ClearBbscHostFollowState();
+ 
+ // The host that rang our sign (2026-10-18). With many hosts on a public server the position lock
+ // below can only be made once our character stands in the host's world - after the join load, so
+@@ -4349,6 +4350,8 @@ u32 BbscRelayHostForPackets() {
+ void TickBbscRelayHostLock() {
+     static s64 last_ms = 0;
+     static s64 not_guest_since_ms = 0;
++    static u32 candidate = 0;
++    static u32 candidate_checks = 0;
+     const s64 now = SteadyNowMs();
+     if (image_base == 0 || now - last_ms < 250) {
+         return;
+@@ -4361,12 +4364,26 @@ void TickBbscRelayHostLock() {
+         if (not_guest_since_ms == 0) {
+             not_guest_since_ms = now;
+         }
+-        if (locked != 0 && now - not_guest_since_ms >= BbscRelayUnlockMs) {
++        const u64 global = GetGlobalState();
++        const bool safely_home = ReadablePointer(global, 0x1598) &&
++                                 ReadValue<u8>(global, 0x1592) != 0 &&
++                                 ReadValue<u8>(global, 0x08) == 0;
++        // A normal return home can be followed by another join before the old five-second
++        // grace expires. Release its host immediately once the own world is settled; keep
++        // the grace only for transient non-guest states during death/loading.
++        if (locked != 0 && (safely_home || now - not_guest_since_ms >= BbscRelayUnlockMs)) {
+             bbsc_relay_locked_host = 0;
+             ClearBbscHostWorldSnapshots();
++            ClearBbscHostFollowState();
++            candidate = 0;
++            candidate_checks = 0;
+             {
+                 std::scoped_lock lock{bbsc_rang_mutex};
+-                bbsc_rang_hosts.clear(); // the next session's host rings anew
++                // A new host may already have rung our sign during this short transition.
++                // Keep that announcement while dropping the previous session's candidates.
++                std::erase_if(bbsc_rang_hosts, [not_guest_since_ms](const auto& entry) {
++                    return entry.second < not_guest_since_ms;
++                });
+             }
+             LOG_INFO(Debug, "BBSC relay: no longer a guest (session state {}) - host {:08x} let go",
+                      state, locked);
+@@ -4410,8 +4427,6 @@ void TickBbscRelayHostLock() {
+     // one host within BbscRelayLockMetres of the host character in our world, nobody else that
+     // close, the same one on BbscRelayLockChecks checks in a row. Lamps put every player on the
+     // same spot, so two hosts there wait until one walks away.
+-    static u32 candidate = 0;
+-    static u32 candidate_checks = 0;
+     const auto host = ReadCharacterTransform(FindRemoteHostCharacter());
+     const u32 map = GetCurrentPackedMap();
+     if (!host.has_value() || map == 0) {
+@@ -4722,6 +4737,12 @@ struct BbscFollowMessage {
+ 
+ std::mutex bbsc_follow_mutex;
+ BbscFollowMessage bbsc_follow_latest{};
++s64 bbsc_host_inplace_respawn_ms = 0;
++
++void ClearBbscHostFollowState() {
++    std::scoped_lock lock{bbsc_follow_mutex};
++    bbsc_follow_latest = {};
++}
+ 
+ bool BbscWarpTogetherEnabled() {
+     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_WARP_TOGETHER");
+@@ -4756,6 +4777,9 @@ void TickBbscFollowBroadcast() {
+     }
+     last_ms = now;
+ 
++    if (bbsc_host_inplace_respawn_ms != 0 && now - bbsc_host_inplace_respawn_ms < 2'000) {
++        return; // give guests a recognisable gap before the first post-respawn placement
++    }
+     if (GetSessionState() != 3) {
+         announced_map = 0; // not hosting a session with anyone in it
+         return;
+@@ -4876,6 +4900,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
+ 
+ // Guest side: go wherever the host says it is.
+ constexpr s64 BbscFollowAfterLoadMs = 5'000;
++std::optional<BbscTransform> ResolveLampPoint(s32 point_id); // defined below
+ 
+ void TickBbscFollowHost() {
+     static s64 last_check_ms = 0;
+@@ -4884,6 +4909,7 @@ void TickBbscFollowHost() {
+     static u32 target_map = 0;
+     static u32 attempts_map = 0;
+     static int attempts = 0;
++    static s64 last_same_map_arrival_ms = 0;
+     if (!BbscWarpTogetherEnabled() || image_base == 0) {
+         return;
+     }
+@@ -4898,6 +4924,9 @@ void TickBbscFollowHost() {
+         ReadValue<u8>(global, 0x1592) != 0 || GetLocalPlayerType() == 2) {
+         warping = false;
+         target_map = 0;
++        attempts_map = 0;
++        attempts = 0;
++        last_same_map_arrival_ms = 0;
+         return; // not a co-op guest in someone else's world (an invader does not follow)
+     }
+     // Test 2026-10-08 (cls_amg, guest): the wipe reload finished and in the same tick the follow
+@@ -4978,12 +5007,14 @@ void TickBbscFollowHost() {
+         // The game's own summon line after the rejoin says so ("You have caught up with ..."),
+         // see TickBbscRejoinLines; keep it pointed there a little longer.
+         ArmBbscRejoinLines(true, target_map, BbscGuestRejoinGraceMs);
++        last_same_map_arrival_ms = host.arrival_ms;
+         LogBbscHostWorldFlagsDiff(target_map, "after arriving");
+         EndBbscLoadCover("arrived beside the host");
+         return;
+     }
+ 
+     if (!bbsc_join_teleport_done) {
++        last_same_map_arrival_ms = host.arrival_ms;
+         return; // the initial join still owns the guest
+     }
+     const u32 here = GetCurrentPackedMap();
+@@ -4991,6 +5022,45 @@ void TickBbscFollowHost() {
+     // The host's map when both were last in the same one: a different map later means the HOST
+     // went somewhere. If only the guest walked off, the host's map is still this one.
+     static u32 shared_host_map = 0;
++    if (here == host.packed_map && host.arrival_by_load &&
++        host.arrival_map == host.packed_map && host.arrival_ms > last_same_map_arrival_ms &&
++        now - host.arrival_ms < 90'000 && settled &&
++        GetCharacterHp(GetLocalPlayerCharacter()) > 0 && host.lamp_point != -1) {
++        const auto lamp = ResolveLampPoint(host.lamp_point);
++        const auto guest = ReadCharacterTransform(GetLocalPlayerCharacter());
++        if (lamp.has_value() && guest.has_value()) {
++            const float hx = host.arrival_x - lamp->position[0];
++            const float hy = host.arrival_y - lamp->position[1];
++            const float hz = host.arrival_z - lamp->position[2];
++            const float gx = guest->position[0] - lamp->position[0];
++            const float gy = guest->position[1] - lamp->position[1];
++            const float gz = guest->position[2] - lamp->position[2];
++            if (hx * hx + hy * hy + hz * hz < 20.0f * 20.0f) {
++                last_same_map_arrival_ms = host.arrival_ms;
++                if (gx * gx + gy * gy + gz * gz > 5.0f * 5.0f) {
++                    const u64 player = GetLocalPlayerCharacter();
++                    const u64 vtable = ReadablePointer(player, 0x08) ? ReadValue<u64>(player, 0) : 0;
++                    const u64 warp = ReadablePointer(vtable, 0x600) ? ReadValue<u64>(vtable, 0x5F8) : 0;
++                    if (IsEbootCodeAddress(warp)) {
++                        alignas(16) std::array<float, 4> position = lamp->position;
++                        alignas(16) std::array<float, 4> rotation = lamp->rotation;
++                        position[0] += 1.0f;
++                        position[3] = 1.0f;
++                        using Warp = void PS4_SYSV_ABI (*)(u64 chr, float* pos, float* rot, u32 flag);
++                        reinterpret_cast<Warp>(warp)(player, position.data(), rotation.data(), 1);
++                        WriteValue<u8>(player, 0x1E1,
++                                       static_cast<u8>(ReadValue<u8>(player, 0x1E1) | 0x02));
++                        LOG_INFO(Debug,
++                                 "BBSC warp together: guest followed same-map host respawn to lamp "
++                                 "{} in map {:#x}", host.lamp_point, here);
++                        BBSC_TIMELINE("FOLLOW", "guest followed same-map host respawn to lamp {} "
++                                      "in map {:#x}", host.lamp_point, here);
++                        ArmBbscRejoinLines(true, here, BbscGuestRejoinGraceMs);
++                    }
++                }
++            }
++        }
++    }
+     if (!IsUsablePackedMap(here) || here == host.packed_map) {
+         mismatch_since_ms = 0;
+         shared_host_map = host.packed_map;
+@@ -7586,6 +7656,9 @@ bool BbscRespawnInPlace(std::string_view why) {
+              why, GetCharacterHp(player), ReadValue<s32>(player, 0x78), where, position[0],
+              position[1], position[2]);
+     bbsc_inplace_respawn_ms = SteadyNowMs();
++    if (!guest) {
++        bbsc_host_inplace_respawn_ms = bbsc_inplace_respawn_ms;
++    }
+     BbscRestockFromStorage(why);
+     if (where == "host's last lamp") {
+         BbscAnnounceAfterCurtain(u"You respawned at the host's lamp.",

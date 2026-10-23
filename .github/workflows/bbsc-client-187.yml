@@ -1,0 +1,46 @@
+name: BBSC 0.0.2 patched Windows client
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/bbsc-187-build
+    paths:
+      - .github/workflows/bbsc-client-187.yml
+      - deploy/seamless_lab/patches/bbsc-0.0.2-client-1.8.7.patch
+      - tools/setup/BuildBbsc002Client.cmd
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream source and submodules
+        shell: pwsh
+        run: |
+          git clone --branch v0.0.2 --single-branch --recursive https://github.com/CLSAMG22/BBSC.git "$env:RUNNER_TEMP\bbsc-002"
+          $sha = git -C "$env:RUNNER_TEMP\bbsc-002" rev-parse HEAD
+          if ($sha -ne '4f11faf88b6ba658ebde6fe5fbefdadedba4fa41') { throw "Unexpected BBSC source commit: $sha" }
+      - name: Apply Windows 1.8.7 fixes
+        shell: pwsh
+        run: git -C "$env:RUNNER_TEMP\bbsc-002" apply "$env:GITHUB_WORKSPACE\deploy\seamless_lab\patches\bbsc-0.0.2-client-1.8.7.patch"
+      - name: Compile BBSC launcher and mod
+        shell: cmd
+        run: tools\setup\BuildBbsc002Client.cmd "%RUNNER_TEMP%\bbsc-002" "%RUNNER_TEMP%\bbsc-187"
+      - name: Verify build outputs
+        shell: pwsh
+        run: |
+          foreach ($name in @('bbsc.dll', 'bbsc-launch.exe')) {
+            $path = Join-Path "$env:RUNNER_TEMP\bbsc-187" $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $name" }
+            Get-FileHash -LiteralPath $path -Algorithm SHA256 | Format-List
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbsc-0.0.2-patched-client-1.8.7
+          path: |
+            ${{ runner.temp }}\bbsc-187\bbsc.dll
+            ${{ runner.temp }}\bbsc-187\bbsc-launch.exe
+          if-no-files-found: error
