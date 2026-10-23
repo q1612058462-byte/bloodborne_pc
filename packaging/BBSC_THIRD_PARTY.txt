@@ -2,18 +2,21 @@ BBSC - Bloodborne Seamless Co-op (experimental offline component)
 Copyright (C) 2026 CLS_AMG and contributors.
 
 Original project and complete source: https://github.com/Classmg22/BBSC
-Release: https://github.com/Classmg22/BBSC/releases/tag/v0.0.1_hotfix_2
-Original archive: BBSC-0.0.1-BBport.zip
-Archive SHA-256: C8E19E72D957D5278F1AEC6EA907E75383E6FAC3A2060A490FF3E1E913F1FFE8
+Release: https://github.com/Classmg22/BBSC/releases/tag/v0.0.2
+Original archive: BBSC-0.0.2-BBport.zip
+Archive SHA-256: 001EFC0A03B47BD6B2660C598FD6D172D2AAAE3201A4982134D1F215918ACD3C
+Source commit: 4f11faf88b6ba658ebde6fe5fbefdadedba4fa41
+Local patch: deploy/seamless_lab/patches/bbsc-0.0.2-client-1.8.7.patch
+Patched client build: https://github.com/q1612058462-byte/bloodborne_pc/actions/runs/39954632565
 
-The unmodified bbsc-launch.exe and bbsc.dll from that archive are bundled
-only for the isolated BBport seamless-co-op experiment. LICENSE.txt,
+The bbsc-launch.exe and bbsc.dll are built from that source with the local
+1.8.7 patch; they are not the unmodified release binaries. LICENSE.txt,
 NOTICE.txt, SUPPORTERS.txt, CREDITS.txt and mod.json are included alongside
 them in runtime/bbsc. BBSC identifies its license as GPL-2.0-or-later;
 third-party components retain their own notices. This launcher is not the
 BBSC project and is not endorsed by its authors. No Bloodborne game files
 are included.
 
-The original traditional online mode does not load BBSC. The experimental
-mode must use a separate test server and saves; two-PC seamless gameplay has
-not yet been validated.
+The original traditional online mode does not load BBSC. All seamless players
+should run the same BBSC 0.0.2 client. This patched client has compiled and
+passed static checks, but the new behavior still needs a live two-PC test.

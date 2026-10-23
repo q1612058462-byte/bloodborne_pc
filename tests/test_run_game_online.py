@@ -180,7 +180,7 @@ class OnlineOverridesTests(unittest.TestCase):
                       'BB_COMMUNITY_SERVER': 'http://127.0.0.1:32443',
                       'BBSC_RELAY': '127.0.0.1:32444'}
             with mock.patch.object(run_game, 'WINDOWS', True), mock.patch.dict(os.environ, values):
-                with self.assertRaisesRegex(ValueError, 'does not match official'):
+                with self.assertRaisesRegex(ValueError, 'does not match the pinned 1.8.7 BBSC 0.0.2 client'):
                     run_game.bbsc_lab_command(['probe'], 'probe', directory)
 
     def test_bbsc_mod_report_exposes_log_and_missing_ready_marker(self):

@@ -4,6 +4,7 @@ param(
     [string]$OutputDirectory = '',
     [string]$BbscPackage = '',
     [string]$BbscDirectory = '',
+    [string]$BbscPatchedDirectory = '',
     [string]$EmbeddedNetExe = ''
 )
 
@@ -78,7 +79,7 @@ if ($BbscPackage -and $BbscDirectory) { throw 'Choose either BbscPackage or Bbsc
 if ($BbscPackage) {
     $bbscPath = [IO.Path]::GetFullPath($BbscPackage)
     if (-not (Test-Path -LiteralPath $bbscPath -PathType Leaf)) { throw "Missing BBSC package: $bbscPath" }
-    $expectedBbscHash = 'C8E19E72D957D5278F1AEC6EA907E75383E6FAC3A2060A490FF3E1E913F1FFE8'
+    $expectedBbscHash = '001EFC0A03B47BD6B2660C598FD6D172D2AAAE3201A4982134D1F215918ACD3C'
     $actualBbscHash = (Get-FileHash -LiteralPath $bbscPath -Algorithm SHA256).Hash
     if ($actualBbscHash -ne $expectedBbscHash) {
         throw "BBSC package hash mismatch: $bbscPath"
@@ -86,9 +87,9 @@ if ($BbscPackage) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $bbscArchive = [IO.Compression.ZipFile]::OpenRead($bbscPath)
     try {
-        $bbscFiles = @('bbsc-launch.exe', 'bbsc.dll', 'LICENSE.txt', 'NOTICE.txt', 'SUPPORTERS.txt', 'mod.json')
+        $bbscFiles = @('LICENSE.txt', 'NOTICE.txt', 'SUPPORTERS.txt', 'mod.json', 'CREDITS.txt')
         foreach ($name in $bbscFiles) {
-            $entryName = 'bbsc/' + $name
+            $entryName = 'BBSC-0.0.2-BBport/bbsc/' + $name
             $entry = $bbscArchive.Entries | Where-Object { $_.FullName.Replace('\', '/') -ceq $entryName } | Select-Object -First 1
             if ($null -eq $entry -or $entry.Length -gt 20MB) { throw "BBSC package missing or invalid: $entryName" }
             $destination = Join-Path $stage ('runtime\bbsc\' + $name)
@@ -96,11 +97,22 @@ if ($BbscPackage) {
             New-Item -ItemType Directory -Force -Path $parent | Out-Null
             [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination)
         }
-        $credits = $bbscArchive.Entries | Where-Object { $_.FullName -ceq 'CREDITS.txt' } | Select-Object -First 1
-        if ($null -eq $credits) { throw 'BBSC package missing CREDITS.txt' }
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($credits, (Join-Path $stage 'runtime\bbsc\CREDITS.txt'))
     }
     finally { $bbscArchive.Dispose() }
+    if (-not $BbscPatchedDirectory) { throw 'BBSC 0.0.2 package requires the pinned 1.8.7 patched client build.' }
+    $patchedRoot = [IO.Path]::GetFullPath($BbscPatchedDirectory)
+    $patchedHashes = @{
+        'bbsc-launch.exe' = 'E015873684A6777EEED54306F80EA025AE874F9F6B37FC47C898CC6FF5AF8390'
+        'bbsc.dll' = '638D61538022B37979A4ED5D0AD0EECC23B99C6AC5D6D8056755F08D1B8C95E2'
+    }
+    foreach ($name in $patchedHashes.Keys) {
+        $source = Join-Path $patchedRoot $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $patchedHashes[$name]) {
+            throw "BBSC 1.8.7 patched component missing or hash mismatch: $source"
+        }
+        Copy-RequiredFile $source (Join-Path $stage ('runtime\bbsc\' + $name))
+    }
     Copy-RequiredFile (Join-Path $packaging 'BBSC_THIRD_PARTY.txt') (Join-Path $stage 'runtime\bbsc\SOURCE_AND_LICENSE.txt')
 }
 if ($BbscDirectory) {
@@ -108,12 +120,12 @@ if ($BbscDirectory) {
     # only when every pinned upstream component matches byte-for-byte.
     $bbscRoot = [IO.Path]::GetFullPath($BbscDirectory)
     $expected = @{
-        'bbsc-launch.exe' = '087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043'
-        'bbsc.dll' = '239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445'
+        'bbsc-launch.exe' = 'E015873684A6777EEED54306F80EA025AE874F9F6B37FC47C898CC6FF5AF8390'
+        'bbsc.dll' = '638D61538022B37979A4ED5D0AD0EECC23B99C6AC5D6D8056755F08D1B8C95E2'
         'LICENSE.txt' = '8177F97513213526DF2CF6184D8FF986C675AFB514D4E68A404010521B880643'
         'NOTICE.txt' = '9919B68F5E5F4F80D2B316C7DAE40C45D0D43CE6274670D67DE655FB11F01F07'
-        'SUPPORTERS.txt' = '64924B1CF91ED231969BDD5DD0C6DA0F15CA990C2BD65959636612F9316491AA'
-        'mod.json' = '8B28FE2AC94CC14ED8640402A28255D2CF32A4864030CB9B8081FD0670727CD4'
+        'SUPPORTERS.txt' = '82C82F554EAD1AEF9639EE42596A34686BAA508D4B9A63566C35F9B1F5DBD6A0'
+        'mod.json' = 'CCEA635CAF411F56859070D971F5920FE60462DA915F291B1F9720A285AE7321'
     }
     foreach ($name in $expected.Keys) {
         $source = Join-Path $bbscRoot $name

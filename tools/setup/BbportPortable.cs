@@ -565,18 +565,13 @@ static class SaveTools {
 
 sealed class MainForm : Form {
     const string TitleText = "Bloodborne PC 中文安装与启动器";
-    static readonly Color ThemeBackground = Color.FromArgb(13, 14, 18);
-    static readonly Color ThemePanel = Color.FromArgb(24, 24, 29);
-    static readonly Color ThemeInput = Color.FromArgb(31, 32, 38);
-    static readonly Color ThemeButton = Color.FromArgb(43, 39, 42);
-    static readonly Color ThemeBorder = Color.FromArgb(91, 77, 73);
-    static readonly Color ThemeText = Color.FromArgb(233, 227, 219);
-    static readonly Color ThemeMuted = Color.FromArgb(169, 160, 153);
-    static readonly Color ThemeGold = Color.FromArgb(215, 173, 119);
-    static readonly Color ThemeAccent = Color.FromArgb(172, 55, 51);
-    static readonly Color ThemeSuccess = Color.FromArgb(142, 198, 151);
-    static readonly Color ThemeWarning = Color.FromArgb(226, 180, 112);
-    static readonly Color ThemeDanger = Color.FromArgb(229, 122, 117);
+    static readonly Color ThemeInput = SystemColors.Window;
+    static readonly Color ThemeText = SystemColors.WindowText;
+    static readonly Color ThemeMuted = SystemColors.GrayText;
+    static readonly Color ThemeGold = Color.FromArgb(88, 24, 24);
+    static readonly Color ThemeSuccess = Color.DarkGreen;
+    static readonly Color ThemeWarning = Color.DarkOrange;
+    static readonly Color ThemeDanger = Color.Firebrick;
     const string PayloadResource = "bbport_payload.zip";
     const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
@@ -842,9 +837,7 @@ sealed class MainForm : Form {
         stateFile = Path.Combine(stateDir, "launcher.ini");
         welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
-        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
-        BackColor = ThemeBackground;
-        ForeColor = ThemeText;
+        Font = SystemFonts.MessageBoxFont;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(S(800), S(730));
         MinimumSize = new Size(S(680), S(580));
@@ -879,9 +872,7 @@ sealed class MainForm : Form {
 
     void BuildUi() {
         Image background = LauncherBackground();
-        tabs = new TabControl { Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed,
-            BackColor = ThemeBackground, ForeColor = ThemeText };
-        tabs.DrawItem += DrawNavigationTab;
+        tabs = new TabControl { Dock = DockStyle.Fill };
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
@@ -917,6 +908,12 @@ sealed class MainForm : Form {
             }
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
         };
+        if (background != null) {
+            foreach (TabPage page in tabs.TabPages) {
+                page.BackgroundImage = background;
+                page.BackgroundImageLayout = ImageLayout.Stretch;
+            }
+        }
         TableLayoutPanel column = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
         column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1045,12 +1042,9 @@ sealed class MainForm : Form {
         lanSeamless = Check("实验性无缝匹配（需要独立的 BBSC 测试服务器）");
         AddSpan(lanMode, lanSeamless);
         lanSeamless.CheckedChanged += delegate { UpdateLabModeAvailability(); };
-        bbscLabMod = Check(BundledBbsc ? "启用 BBSC 游戏补丁（已内置）" : "启用 BBSC 游戏补丁（需先导入官方测试包）");
+        bbscLabMod = Check(BundledBbsc ? "启用 BBSC 游戏补丁（已内置）" : "启用 BBSC 游戏补丁（需安装完整运行环境）");
         AddSpan(lanMode, bbscLabMod);
         UpdateLabModeAvailability();
-        Button importBbscButton = new Button { Text = BundledBbsc ? "从官方 ZIP 修复 BBSC 组件…" : "导入 BBSC 官方测试包…", AutoSize = true };
-        importBbscButton.Click += delegate { ImportBbscTestPackage(); };
-        AddSpan(lanMode, importBbscButton);
         AddSpan(lanMode, Note("普通局域网联机保持上面两个实验选项关闭。使用无缝测试服时同时开启两项，且不要在本机启动普通服务器；异地无缝请优先使用“在线无缝联机”页。"));
         lanColumn.Controls.Add(lanMode.Parent);
 
@@ -1515,7 +1509,6 @@ sealed class MainForm : Form {
         logPage.Controls.Add(logBox);
 
         TableLayoutPanel bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, ColumnCount = 1, AutoSize = true,
-            Tag = "footer",
             Padding = new Padding(S(8), S(4), S(8), S(8)) };
         statusLabel = new Label { AutoSize = true, Text = "请选择游戏本体目录，然后安装运行环境。" };
         progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(14), Style = ProgressBarStyle.Continuous };
@@ -1535,95 +1528,17 @@ sealed class MainForm : Form {
         Controls.Add(tabs);
         Controls.Add(bottom);
         if (background != null) {
-            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(124), BackgroundImage = background,
-                Tag = "hero",
+            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(112), BackgroundImage = background,
                 BackgroundImageLayout = ImageLayout.Zoom, BackColor = Color.FromArgb(15, 18, 24) };
             Label heroText = new Label { AutoSize = true, BackColor = Color.FromArgb(170, 8, 10, 14),
-                ForeColor = ThemeText, Font = new Font(Font.FontFamily, 17f, FontStyle.Bold),
-                Text = "  XIYUHANYAN  ·  猎人之夜  ", Location = new Point(S(18), S(70)),
-                Padding = new Padding(S(9), S(5), S(9), S(5)) };
+                ForeColor = Color.WhiteSmoke, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold),
+                Text = "  猎人之夜 · Bloodborne PC  ", Location = new Point(S(18), S(68)),
+                Padding = new Padding(S(6), S(4), S(6), S(4)) };
             hero.Controls.Add(heroText);
             Controls.Add(hero);
         }
-        ApplyTheme(this);
         AcceptButton = installButton;
         UpdateButtons();
-    }
-
-    void DrawNavigationTab(object sender, DrawItemEventArgs e) {
-        if (e.Index < 0 || e.Index >= tabs.TabPages.Count) return;
-        bool selected = e.Index == tabs.SelectedIndex;
-        Rectangle rect = tabs.GetTabRect(e.Index);
-        using (Brush fill = new SolidBrush(selected ? ThemePanel : ThemeBackground))
-            e.Graphics.FillRectangle(fill, rect);
-        if (selected) using (Brush accent = new SolidBrush(ThemeAccent))
-            e.Graphics.FillRectangle(accent, rect.Left + S(2), rect.Bottom - S(3), rect.Width - S(4), S(3));
-        TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, Font, rect,
-            selected ? ThemeGold : ThemeMuted,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-    }
-
-    void ApplyTheme(Control control) {
-        if ("hero".Equals(control.Tag)) return;
-        TabPage page = control as TabPage;
-        GroupBox group = control as GroupBox;
-        Button button = control as Button;
-        if (page != null) {
-            page.BackColor = ThemeBackground;
-            page.ForeColor = ThemeText;
-            page.BackgroundImage = null;
-            page.Padding = new Padding(S(14));
-        } else if (group != null) {
-            group.BackColor = ThemePanel;
-            group.ForeColor = ThemeGold;
-            group.Padding = new Padding(S(14), S(10), S(14), S(14));
-            group.Margin = new Padding(0, 0, 0, S(12));
-        } else if (button != null) {
-            bool primary = button == playButton || button == seamlessQuickButton ||
-                button == onlineQuickButton || button == lanLaunchButton;
-            button.FlatStyle = FlatStyle.Flat;
-            button.UseVisualStyleBackColor = false;
-            button.BackColor = primary ? ThemeAccent : ThemeButton;
-            button.ForeColor = ThemeText;
-            button.FlatAppearance.BorderColor = primary ? ThemeAccent : ThemeBorder;
-            button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(197, 68, 62) : Color.FromArgb(62, 54, 53);
-            button.FlatAppearance.MouseDownBackColor = ThemeAccent;
-            button.Padding = new Padding(S(8), S(4), S(8), S(4));
-        } else if (control is LinkLabel) {
-            LinkLabel link = (LinkLabel)control;
-            link.LinkColor = ThemeGold;
-            link.ActiveLinkColor = ThemeText;
-            link.VisitedLinkColor = ThemeGold;
-            link.BackColor = Color.Transparent;
-        } else if (control is Label) {
-            Label label = (Label)control;
-            label.BackColor = Color.Transparent;
-            if (label.ForeColor == SystemColors.GrayText) label.ForeColor = ThemeMuted;
-            else if (label.ForeColor == SystemColors.ControlText) label.ForeColor = ThemeText;
-        } else if (control is RichTextBox || control is TextBox) {
-            TextBoxBase input = (TextBoxBase)control;
-            input.BackColor = ThemeInput;
-            input.ForeColor = ThemeText;
-            input.BorderStyle = BorderStyle.FixedSingle;
-        } else if (control is ComboBox) {
-            ComboBox combo = (ComboBox)control;
-            combo.FlatStyle = FlatStyle.Flat;
-            combo.BackColor = ThemeInput;
-            combo.ForeColor = ThemeText;
-        } else if (control is NumericUpDown) {
-            control.BackColor = ThemeInput;
-            control.ForeColor = ThemeText;
-        } else if (control is ListView) {
-            control.BackColor = ThemeInput;
-            control.ForeColor = ThemeText;
-        } else if (control is CheckBox || control is RadioButton) {
-            control.BackColor = Color.Transparent;
-            control.ForeColor = ThemeText;
-        } else if (control is TableLayoutPanel || control is FlowLayoutPanel) {
-            control.BackColor = "footer".Equals(control.Tag) ? ThemePanel : Color.Transparent;
-            control.ForeColor = ThemeText;
-        }
-        foreach (Control child in control.Controls) ApplyTheme(child);
     }
 
     void ApplyQualityProfile(string profile) {
@@ -3449,7 +3364,7 @@ sealed class MainForm : Form {
             bbscLabMod.Checked && !BbscFilesReady(root)) {
             Warn(BundledBbsc ?
                 "BBSC 实验组件未就绪或校验失败：请先点击“安装 / 更新运行环境”。若已有不同版本的手工组件，安装器不会覆盖，请先自行备份并处理。" :
-                "BBSC 实验组件未就绪：请点击“导入 BBSC 官方测试包…”并选择官方 BBport ZIP。");
+                "BBSC 实验组件未就绪：请安装完整的 1.8.7 运行环境。");
             return false;
         }
         if (requireInstalled && !lanMode) {
@@ -3552,81 +3467,9 @@ sealed class MainForm : Form {
         foreach (string name in new[] { "bbsc-launch.exe", "bbsc.dll", "LICENSE.txt", "NOTICE.txt", "SUPPORTERS.txt", "mod.json" })
             if (!File.Exists(Path.Combine(folder, name))) return false;
         return FileSha256(Path.Combine(folder, "bbsc-launch.exe")).Equals(
-                   "087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043", StringComparison.OrdinalIgnoreCase) &&
+                   "E015873684A6777EEED54306F80EA025AE874F9F6B37FC47C898CC6FF5AF8390", StringComparison.OrdinalIgnoreCase) &&
                FileSha256(Path.Combine(folder, "bbsc.dll")).Equals(
-                   "239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445", StringComparison.OrdinalIgnoreCase);
-    }
-
-    void ImportBbscTestPackage() {
-        if (busy || NativeCoreRunning()) { Warn("请先等待当前操作结束并退出游戏，再导入 BBSC 测试包。"); return; }
-        string root;
-        try { root = Path.GetFullPath(rootBox.Text.Trim().Trim('"')); }
-        catch (Exception e) { Warn("运行环境目录无效：" + e.Message); return; }
-        if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe"))) {
-            Warn("请先安装运行环境，再导入 BBSC 测试包。"); return;
-        }
-        using (OpenFileDialog dialog = new OpenFileDialog {
-            Title = "选择 BBSC 官方 BBport 测试包 v0.0.1_hotfix_2",
-            Filter = "BBSC ZIP (*.zip)|*.zip", CheckFileExists = true
-        }) {
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            const string packageHash = "C8E19E72D957D5278F1AEC6EA907E75383E6FAC3A2060A490FF3E1E913F1FFE8";
-            if (!FileSha256(dialog.FileName).Equals(packageHash, StringComparison.OrdinalIgnoreCase)) {
-                Warn("测试包 SHA-256 与已核验的 BBSC-0.0.1-BBport.zip 不一致。请从 BBSC 官方 GitHub Release v0.0.1_hotfix_2 重新下载。");
-                return;
-            }
-            string[] names = { "bbsc-launch.exe", "bbsc.dll", "LICENSE.txt", "NOTICE.txt", "SUPPORTERS.txt", "mod.json" };
-            string[] hashes = {
-                "087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043",
-                "239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445",
-                "8177F97513213526DF2CF6184D8FF986C675AFB514D4E68A404010521B880643",
-                "9919B68F5E5F4F80D2B316C7DAE40C45D0D43CE6274670D67DE655FB11F01F07",
-                "64924B1CF91ED231969BDD5DD0C6DA0F15CA990C2BD65959636612F9316491AA",
-                "8B28FE2AC94CC14ED8640402A28255D2CF32A4864030CB9B8081FD0670727CD4"
-            };
-            try {
-                string folder = Path.Combine(root, "runtime", "bbsc");
-                byte[][] payloads = new byte[names.Length][];
-                using (ZipArchive archive = ZipFile.OpenRead(dialog.FileName)) {
-                    for (int i = 0; i < names.Length; i++) {
-                        ZipArchiveEntry entry = null;
-                        foreach (ZipArchiveEntry item in archive.Entries) {
-                            if (item.FullName.Replace('\\', '/').Equals("bbsc/" + names[i], StringComparison.OrdinalIgnoreCase)) {
-                                entry = item; break;
-                            }
-                        }
-                        if (entry == null || entry.Length > 20 * 1024 * 1024)
-                            throw new InvalidDataException("测试包缺少或包含异常大小的 " + names[i]);
-                        using (Stream input = entry.Open()) using (MemoryStream output = new MemoryStream()) {
-                            input.CopyTo(output);
-                            payloads[i] = output.ToArray();
-                        }
-                        using (SHA256 sha = SHA256.Create()) {
-                            string actual = BitConverter.ToString(sha.ComputeHash(payloads[i])).Replace("-", "");
-                            if (!actual.Equals(hashes[i], StringComparison.OrdinalIgnoreCase))
-                                throw new InvalidDataException(names[i] + " 校验失败");
-                        }
-                        string target = Path.Combine(folder, names[i]);
-                        if (File.Exists(target) && !FileSha256(target).Equals(hashes[i], StringComparison.OrdinalIgnoreCase))
-                            throw new IOException("已有不同版本的 " + target + "；请先自行备份并处理，启动器不会覆盖它。");
-                    }
-                }
-                Directory.CreateDirectory(folder);
-                for (int i = 0; i < names.Length; i++) {
-                    string target = Path.Combine(folder, names[i]);
-                    if (File.Exists(target)) continue;
-                    string temporary = target + ".import-" + Guid.NewGuid().ToString("N");
-                    try {
-                        using (FileStream output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write))
-                            output.Write(payloads[i], 0, payloads[i].Length);
-                        File.Move(temporary, target);
-                    } finally { if (File.Exists(temporary)) File.Delete(temporary); }
-                }
-                MessageBox.Show(this, "BBSC 官方测试组件已导入到：\r\n" + folder +
-                    "\r\n\r\n仅用于独立无缝联机实验服。正式传统在线联机不受影响。",
-                    TitleText, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            } catch (Exception e) { Warn("导入 BBSC 测试包失败：" + e.Message); }
-        }
+                   "638D61538022B37979A4ED5D0AD0EECC23B99C6AC5D6D8056755F08D1B8C95E2", StringComparison.OrdinalIgnoreCase);
     }
 
     void Warn(string text) { MessageBox.Show(this, text, TitleText, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
@@ -3940,8 +3783,8 @@ sealed class MainForm : Form {
                 notes.SelectionFont = headingFont;
                 bool current = PackageVersion.Length > 0 && lines[i].StartsWith("v" + PackageVersion,
                     StringComparison.OrdinalIgnoreCase);
-                notes.SelectionColor = current ? ThemeGold : ThemeMuted;
-                if (current) notes.SelectionBackColor = Color.FromArgb(58, 37, 38);
+                notes.SelectionColor = current ? Color.FromArgb(142, 42, 34) : Color.FromArgb(45, 75, 110);
+                if (current) notes.SelectionBackColor = Color.FromArgb(255, 248, 225);
             } else if (lines[i].StartsWith("- ", StringComparison.Ordinal)) {
                 notes.SelectionIndent = S(14);
                 notes.SelectionRightIndent = S(8);
@@ -4008,6 +3851,17 @@ sealed class MainForm : Form {
         Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource);
         if (resource == null) throw new InvalidOperationException("EXE 中没有找到内置运行环境。请重新生成或重新下载完整文件。");
         string rootFull = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        Dictionary<string, string> previousBbscHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
+            { "bbsc-launch.exe", "087C83CE466EBF3DE8395731000293FF9B7EA83C735A0664FB5E32C908F62043" },
+            { "bbsc.dll", "239AE3725613D5B090ED7F2BED33CC1EE2031B08F4DC8897220C7F4C22DA7445" },
+            { "LICENSE.txt", "8177F97513213526DF2CF6184D8FF986C675AFB514D4E68A404010521B880643" },
+            { "NOTICE.txt", "9919B68F5E5F4F80D2B316C7DAE40C45D0D43CE6274670D67DE655FB11F01F07" },
+            { "SUPPORTERS.txt", "64924B1CF91ED231969BDD5DD0C6DA0F15CA990C2BD65959636612F9316491AA" },
+            { "mod.json", "8B28FE2AC94CC14ED8640402A28255D2CF32A4864030CB9B8081FD0670727CD4" },
+            { "CREDITS.txt", "055CF75B72B00CB5826C8EA333AA9DD6129370ED8429BE62706C49E4D725D62F" },
+            { "SOURCE_AND_LICENSE.txt", "1E0ECC60E2A46DC874D3351EDA63D11291CC34683DF1F42DB8E78626BEB88165" }
+        };
+        HashSet<string> previousBbscFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         using (resource)
         using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read)) {
             int count = archive.Entries.Count;
@@ -4025,9 +3879,21 @@ sealed class MainForm : Form {
                 using (SHA256 sha = SHA256.Create())
                 using (Stream input = entry.Open())
                     bundledHash = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
-                if (!FileSha256(target).Equals(bundledHash, StringComparison.OrdinalIgnoreCase))
+                if (FileSha256(target).Equals(bundledHash, StringComparison.OrdinalIgnoreCase)) continue;
+                string expectedPrevious;
+                if (!previousBbscHashes.TryGetValue(entry.Name, out expectedPrevious) ||
+                    !FileSha256(target).Equals(expectedPrevious, StringComparison.OrdinalIgnoreCase))
                     throw new IOException("现有手工 BBSC 文件与离线包版本不同，不会覆盖：" + target +
                         "。请自行备份并处理，或选择新的运行环境目录。");
+                previousBbscFiles.Add(target);
+            }
+            if (previousBbscFiles.Count > 0) {
+                string backup = Path.Combine(destination, "runtime", "bbsc-backups",
+                    "before-1.8.7-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                Directory.CreateDirectory(backup);
+                foreach (string source in previousBbscFiles)
+                    File.Copy(source, Path.Combine(backup, Path.GetFileName(source)));
+                Log("旧版 BBSC 文件已备份到：" + backup);
             }
             BeginInvoke((Action)delegate { progress.Maximum = Math.Max(1, count); });
             for (int i = 0; i < count; ++i) {
@@ -4037,7 +3903,7 @@ sealed class MainForm : Form {
                     throw new InvalidDataException("内置文件路径不安全：" + entry.FullName);
                 if (entry.Name.Length == 0) { Directory.CreateDirectory(target); continue; }
                 if (entry.FullName.Replace('\\', '/').StartsWith("runtime/bbsc/", StringComparison.OrdinalIgnoreCase) &&
-                    File.Exists(target)) continue;
+                    File.Exists(target) && !previousBbscFiles.Contains(target)) continue;
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
                 using (Stream input = entry.Open())
                 using (FileStream output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None))

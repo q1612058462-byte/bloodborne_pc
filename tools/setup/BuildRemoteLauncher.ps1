@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $OverlayServerIp,
     [string] $SeamlessOverlayServerIp = '',
-    [string] $PayloadZip = ''
+    [string] $PayloadZip = '',
+    [string] $OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,7 +35,7 @@ if ($SeamlessOverlayServerIp) {
 $sourceZip = if ($PayloadZip) { [IO.Path]::GetFullPath($PayloadZip) } else {
     Join-Path $root 'packaging\windows-portable-payload.zip'
 }
-$dist = Join-Path $root 'dist'
+$dist = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root 'dist' }
 $version = [IO.File]::ReadAllText((Join-Path $root 'packaging\APP_VERSION.txt')).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid package version: $version" }
 $remoteZip = Join-Path $dist "windows-portable-payload-online-v$version.zip"

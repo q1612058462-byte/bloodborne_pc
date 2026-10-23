@@ -51,12 +51,12 @@ COMMUNITY_SERVER = 'https://thehuntersdream.com'
 GAME_SERVER = 'https://ss4.scej-network.jp:20443'
 COMMUNITY_API_PORT = 18671
 BBSC_LAB_HASHES = {
-    'bbsc-launch.exe': '087c83ce466ebf3de8395731000293ff9b7ea83c735a0664fb5e32c908f62043',
-    'bbsc.dll': '239ae3725613d5b090ed7f2bed33cc1ee2031b08f4dc8897220c7f4c22da7445',
+    'bbsc-launch.exe': 'e015873684a6777eeed54306f80ea025ae874f9f6b37fc47c898cc6ff5af8390',
+    'bbsc.dll': '638d61538022b37979a4ed5d0ad0eecc23b99c6ac5d6d8056755f08d1b8c95e2',
     'LICENSE.txt': '8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643',
     'NOTICE.txt': '9919b68f5e5f4f80d2b316c7dae40c45d0d43ce6274670d67de655fb11f01f07',
-    'SUPPORTERS.txt': '64924b1cf91ed231969bdd5dd0c6da0f15ca990c2bd65959636612f9316491aa',
-    'mod.json': '8b28fe2ac94cc14ed8640402a28255d2cf32a4864030cb9b8081fd0670727cd4',
+    'SUPPORTERS.txt': '82c82f554ead1aef9639ee42596a34686baa508d4b9a63566c35f9b1f5dbd6a0',
+    'mod.json': 'ccea635caf411f56859070d971f5920fe60462da915f291b1f9720a285ae7321',
 }
 
 
@@ -359,7 +359,7 @@ def bbsc_lab_command(command, probe, runtime):
         if not path.is_file():
             raise FileNotFoundError(f'BBSC lab file missing: {path}; import the complete official BBport ZIP')
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            raise ValueError(f'BBSC lab component does not match official BBport v0.0.1_hotfix_2: {path}')
+            raise ValueError(f'BBSC lab component does not match the pinned 1.8.7 BBSC 0.0.2 client: {path}')
     os.environ['SHADPS4_BLOODBORNE_SEAMLESS_COOP'] = '0'  # BBSC DLL owns the game hooks.
     # The upstream test mod enables these by default. Do not alter the guest's
     # progression or publish play status on Discord during an unproven lab test.
