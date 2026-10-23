@@ -122,7 +122,7 @@ index 6c278c3..5372172 100644
      const s64 now = SteadyNowMs();
      if (image_base == 0 || now - last_ms < 250) {
          return;
-@@ -4361,12 +4364,26 @@ void TickBbscRelayHostLock() {
+@@ -4361,12 +4364,27 @@ void TickBbscRelayHostLock() {
          if (not_guest_since_ms == 0) {
              not_guest_since_ms = now;
          }
@@ -145,13 +145,14 @@ index 6c278c3..5372172 100644
 -                bbsc_rang_hosts.clear(); // the next session's host rings anew
 +                // A new host may already have rung our sign during this short transition.
 +                // Keep that announcement while dropping the previous session's candidates.
-+                std::erase_if(bbsc_rang_hosts, [not_guest_since_ms](const auto& entry) {
-+                    return entry.second < not_guest_since_ms;
++                const s64 transition_started_ms = not_guest_since_ms;
++                std::erase_if(bbsc_rang_hosts, [transition_started_ms](const auto& entry) {
++                    return entry.second < transition_started_ms;
 +                });
              }
              LOG_INFO(Debug, "BBSC relay: no longer a guest (session state {}) - host {:08x} let go",
                       state, locked);
-@@ -4410,8 +4427,6 @@ void TickBbscRelayHostLock() {
+@@ -4410,8 +4428,6 @@ void TickBbscRelayHostLock() {
      // one host within BbscRelayLockMetres of the host character in our world, nobody else that
      // close, the same one on BbscRelayLockChecks checks in a row. Lamps put every player on the
      // same spot, so two hosts there wait until one walks away.
@@ -160,7 +161,7 @@ index 6c278c3..5372172 100644
      const auto host = ReadCharacterTransform(FindRemoteHostCharacter());
      const u32 map = GetCurrentPackedMap();
      if (!host.has_value() || map == 0) {
-@@ -4722,6 +4737,12 @@ struct BbscFollowMessage {
+@@ -4722,6 +4738,12 @@ struct BbscFollowMessage {
  
  std::mutex bbsc_follow_mutex;
  BbscFollowMessage bbsc_follow_latest{};
@@ -173,7 +174,7 @@ index 6c278c3..5372172 100644
  
  bool BbscWarpTogetherEnabled() {
      static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_WARP_TOGETHER");
-@@ -4756,6 +4777,9 @@ void TickBbscFollowBroadcast() {
+@@ -4756,6 +4778,9 @@ void TickBbscFollowBroadcast() {
      }
      last_ms = now;
  
@@ -183,7 +184,7 @@ index 6c278c3..5372172 100644
      if (GetSessionState() != 3) {
          announced_map = 0; // not hosting a session with anyone in it
          return;
-@@ -4876,6 +4900,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
+@@ -4876,6 +4901,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
  
  // Guest side: go wherever the host says it is.
  constexpr s64 BbscFollowAfterLoadMs = 5'000;
@@ -191,7 +192,7 @@ index 6c278c3..5372172 100644
  
  void TickBbscFollowHost() {
      static s64 last_check_ms = 0;
-@@ -4884,6 +4909,7 @@ void TickBbscFollowHost() {
+@@ -4884,6 +4910,7 @@ void TickBbscFollowHost() {
      static u32 target_map = 0;
      static u32 attempts_map = 0;
      static int attempts = 0;
@@ -199,7 +200,7 @@ index 6c278c3..5372172 100644
      if (!BbscWarpTogetherEnabled() || image_base == 0) {
          return;
      }
-@@ -4898,6 +4924,9 @@ void TickBbscFollowHost() {
+@@ -4898,6 +4925,9 @@ void TickBbscFollowHost() {
          ReadValue<u8>(global, 0x1592) != 0 || GetLocalPlayerType() == 2) {
          warping = false;
          target_map = 0;
@@ -209,7 +210,7 @@ index 6c278c3..5372172 100644
          return; // not a co-op guest in someone else's world (an invader does not follow)
      }
      // Test 2026-10-08 (cls_amg, guest): the wipe reload finished and in the same tick the follow
-@@ -4978,12 +5007,14 @@ void TickBbscFollowHost() {
+@@ -4978,12 +5008,14 @@ void TickBbscFollowHost() {
          // The game's own summon line after the rejoin says so ("You have caught up with ..."),
          // see TickBbscRejoinLines; keep it pointed there a little longer.
          ArmBbscRejoinLines(true, target_map, BbscGuestRejoinGraceMs);
@@ -224,7 +225,7 @@ index 6c278c3..5372172 100644
          return; // the initial join still owns the guest
      }
      const u32 here = GetCurrentPackedMap();
-@@ -4991,6 +5022,45 @@ void TickBbscFollowHost() {
+@@ -4991,6 +5023,45 @@ void TickBbscFollowHost() {
      // The host's map when both were last in the same one: a different map later means the HOST
      // went somewhere. If only the guest walked off, the host's map is still this one.
      static u32 shared_host_map = 0;
@@ -270,7 +271,7 @@ index 6c278c3..5372172 100644
      if (!IsUsablePackedMap(here) || here == host.packed_map) {
          mismatch_since_ms = 0;
          shared_host_map = host.packed_map;
-@@ -7586,6 +7656,9 @@ bool BbscRespawnInPlace(std::string_view why) {
+@@ -7586,6 +7657,9 @@ bool BbscRespawnInPlace(std::string_view why) {
               why, GetCharacterHp(player), ReadValue<s32>(player, 0x78), where, position[0],
               position[1], position[2]);
      bbsc_inplace_respawn_ms = SteadyNowMs();
