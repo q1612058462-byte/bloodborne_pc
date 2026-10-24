@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
@@ -51,6 +52,55 @@ sealed class Choice {
     public readonly string Value;
     public Choice(string text, string value) { Text = text; Value = value; }
     public override string ToString() { return Text; }
+}
+
+// The visual shell stays in WinForms so the portable launcher needs no WebView runtime.
+sealed class LauncherHero : Panel {
+    public Image Artwork;
+    public string Version = "";
+    public LauncherHero() { DoubleBuffered = true; ResizeRedraw = true; }
+    protected override void OnPaint(PaintEventArgs e) {
+        if (Width <= 0 || Height <= 0) return;
+        Graphics g = e.Graphics;
+        float dpi = g.DpiX / 96f;
+        Func<int, int> px = value => (int)Math.Round(value * dpi);
+        g.Clear(Color.FromArgb(19, 25, 31));
+        if (Artwork != null) {
+            float ratio = Math.Max((float)Width / Artwork.Width, (float)Height / Artwork.Height);
+            int w = (int)Math.Ceiling(Artwork.Width * ratio);
+            int h = (int)Math.Ceiling(Artwork.Height * ratio);
+            g.DrawImage(Artwork, new Rectangle((Width - w) / 2, (Height - h) / 2, w, h));
+        }
+        using (Brush shade = new LinearGradientBrush(ClientRectangle,
+            Color.FromArgb(245, 16, 20, 28), Color.FromArgb(72, 16, 20, 28), LinearGradientMode.Horizontal))
+            g.FillRectangle(shade, ClientRectangle);
+        using (Font eyebrow = new Font("Segoe UI", 8.5f, FontStyle.Bold))
+        using (Font headline = new Font("Microsoft YaHei UI", 22f, FontStyle.Bold))
+        using (Font caption = new Font("Microsoft YaHei UI", 9f)) {
+            TextRenderer.DrawText(g, "XIYUHANYAN  /  WINDOWS PORT", eyebrow,
+                new Point(px(26), px(19)), Color.FromArgb(219, 181, 127));
+            TextRenderer.DrawText(g, "猎人之夜  ·  Bloodborne PC", headline,
+                new Point(px(23), px(40)), Color.WhiteSmoke);
+            TextRenderer.DrawText(g, "整合、联机与冒险，从这里开始" +
+                (Version.Length == 0 ? "" : "    ·    v" + Version), caption,
+                new Point(px(27), px(99)), Color.FromArgb(222, 225, 224));
+        }
+    }
+}
+
+sealed class LauncherCard : GroupBox {
+    public LauncherCard() { DoubleBuffered = true; ResizeRedraw = true; }
+    protected override void OnPaint(PaintEventArgs e) {
+        if (Width <= 0 || Height <= 0) return;
+        Graphics g = e.Graphics;
+        g.Clear(BackColor);
+        using (Pen border = new Pen(Color.FromArgb(223, 216, 207)))
+            g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        using (Brush accent = new SolidBrush(Color.FromArgb(128, 48, 51)))
+            g.FillRectangle(accent, 0, 0, 4, Height);
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(16, 8, Math.Max(0, Width - 28), 24),
+            ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
 }
 
 static class XboxModArchive {
@@ -614,13 +664,15 @@ static class SaveTools {
 
 sealed class MainForm : Form {
     const string TitleText = "Bloodborne PC 中文安装与启动器";
-    static readonly Color ThemeInput = SystemColors.Window;
-    static readonly Color ThemeText = SystemColors.WindowText;
-    static readonly Color ThemeMuted = SystemColors.GrayText;
-    static readonly Color ThemeGold = Color.FromArgb(88, 24, 24);
-    static readonly Color ThemeSuccess = Color.DarkGreen;
-    static readonly Color ThemeWarning = Color.DarkOrange;
-    static readonly Color ThemeDanger = Color.Firebrick;
+    static readonly Color ThemeInput = Color.White;
+    static readonly Color ThemeText = Color.FromArgb(43, 43, 47);
+    static readonly Color ThemeMuted = Color.FromArgb(109, 106, 105);
+    static readonly Color ThemeGold = Color.FromArgb(122, 48, 51);
+    static readonly Color ThemeCanvas = Color.FromArgb(248, 246, 243);
+    static readonly Color ThemeSidebar = Color.FromArgb(241, 236, 230);
+    static readonly Color ThemeSuccess = Color.FromArgb(35, 119, 84);
+    static readonly Color ThemeWarning = Color.FromArgb(174, 96, 31);
+    static readonly Color ThemeDanger = Color.FromArgb(170, 53, 54);
     const string PayloadResource = "bbport_payload.zip";
     const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
@@ -804,6 +856,9 @@ sealed class MainForm : Form {
     Button installButton, saveButton, playButton;
     TabControl tabs;
     TabPage logPage;
+    Label pageHeading, pageDescription;
+    readonly Dictionary<TabPage, Button> navigationButtons = new Dictionary<TabPage, Button>();
+    readonly Dictionary<TabPage, string> navigationDescriptions = new Dictionary<TabPage, string>();
     ProgressBar progress;
     volatile bool busy;
     Process launcherProcess;
@@ -893,10 +948,11 @@ sealed class MainForm : Form {
         stateFile = Path.Combine(stateDir, "launcher.ini");
         welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
-        Font = SystemFonts.MessageBoxFont;
+        Font = new Font("Microsoft YaHei UI", 9f);
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(S(800), S(730));
-        MinimumSize = new Size(S(680), S(580));
+        ClientSize = new Size(S(1120), S(790));
+        MinimumSize = new Size(S(900), S(650));
+        BackColor = ThemeCanvas;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         BuildUi();
         LoadSettings(rootArgument);
@@ -928,7 +984,9 @@ sealed class MainForm : Form {
 
     void BuildUi() {
         Image background = LauncherBackground();
-        tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs = new TabControl { Dock = DockStyle.Fill, Appearance = TabAppearance.FlatButtons,
+            SizeMode = TabSizeMode.Fixed, ItemSize = new Size(0, 1), Multiline = true,
+            TabStop = false, Margin = Padding.Empty };
         TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
@@ -967,12 +1025,7 @@ sealed class MainForm : Form {
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
             if (tabs.SelectedTab == modsPage) RefreshMods();
         };
-        if (background != null) {
-            foreach (TabPage page in tabs.TabPages) {
-                page.BackgroundImage = background;
-                page.BackgroundImageLayout = ImageLayout.Stretch;
-            }
-        }
+        foreach (TabPage page in tabs.TabPages) page.BackColor = ThemeCanvas;
         TableLayoutPanel column = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
         column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1656,9 +1709,11 @@ sealed class MainForm : Form {
         logPage.Controls.Add(logBox);
 
         TableLayoutPanel bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, ColumnCount = 1, AutoSize = true,
-            Padding = new Padding(S(8), S(4), S(8), S(8)) };
-        statusLabel = new Label { AutoSize = true, Text = "请选择游戏本体目录，然后安装运行环境。" };
-        progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(14), Style = ProgressBarStyle.Continuous };
+            BackColor = Color.White, Padding = new Padding(S(18), S(8), S(18), S(12)) };
+        statusLabel = new Label { AutoSize = true, ForeColor = ThemeMuted,
+            Text = "请选择游戏本体目录，然后安装运行环境。", Margin = new Padding(0, 0, 0, S(7)) };
+        progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(5), Style = ProgressBarStyle.Continuous,
+            Margin = new Padding(0, 0, 0, S(9)) };
         FlowLayoutPanel buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
         Button closeButton = new Button { Text = "关闭", AutoSize = true };
         closeButton.Click += delegate { Close(); };
@@ -1672,20 +1727,134 @@ sealed class MainForm : Form {
         bottom.Controls.Add(statusLabel);
         bottom.Controls.Add(progress);
         bottom.Controls.Add(buttons);
-        Controls.Add(tabs);
+        Panel content = new Panel { Dock = DockStyle.Fill, BackColor = ThemeCanvas };
+        Panel pageHeader = new Panel { Dock = DockStyle.Top, Height = S(72), BackColor = Color.White,
+            Padding = new Padding(S(22), S(10), S(18), S(8)) };
+        pageHeading = new Label { AutoSize = true, Location = new Point(S(22), S(10)),
+            ForeColor = ThemeText, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold) };
+        pageDescription = new Label { AutoSize = true, Location = new Point(S(23), S(43)),
+            ForeColor = ThemeMuted, Font = new Font(Font.FontFamily, 8.5f) };
+        pageHeader.Controls.Add(pageHeading);
+        pageHeader.Controls.Add(pageDescription);
+        content.Controls.Add(tabs);
+        content.Controls.Add(pageHeader);
+        Panel sidebar = BuildNavigation(settingsPage, seamlessPage, lanPage, onlinePage, inputPage,
+            modsPage, savePage, cheatPage, shaderPage, versionPage, knownIssuesPage, helpPage, logPage);
+        Controls.Add(content);
+        Controls.Add(sidebar);
         Controls.Add(bottom);
-        if (background != null) {
-            Panel hero = new Panel { Dock = DockStyle.Top, Height = S(112), BackgroundImage = background,
-                BackgroundImageLayout = ImageLayout.Zoom, BackColor = Color.FromArgb(15, 18, 24) };
-            Label heroText = new Label { AutoSize = true, BackColor = Color.FromArgb(170, 8, 10, 14),
-                ForeColor = Color.WhiteSmoke, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold),
-                Text = "  猎人之夜 · Bloodborne PC  ", Location = new Point(S(18), S(68)),
-                Padding = new Padding(S(6), S(4), S(6), S(4)) };
-            hero.Controls.Add(heroText);
-            Controls.Add(hero);
-        }
+        Controls.Add(new LauncherHero { Dock = DockStyle.Top, Height = S(136), Artwork = background,
+            Version = PackageVersion });
+        ApplyTheme(this);
+        StylePrimaryButton(playButton);
+        StylePrimaryButton(seamlessQuickButton);
+        StylePrimaryButton(onlineQuickButton);
+        tabs.SelectedIndexChanged += delegate { UpdateNavigation(); };
+        UpdateNavigation();
         AcceptButton = null; // Never install or launch just by pressing Enter in a path field.
         UpdateButtons();
+    }
+
+    Panel BuildNavigation(TabPage settings, TabPage seamless, TabPage lan, TabPage online,
+        TabPage input, TabPage mods, TabPage saves, TabPage cheats, TabPage shader,
+        TabPage version, TabPage issues, TabPage help, TabPage logs) {
+        Panel sidebar = new Panel { Dock = DockStyle.Left, Width = S(194), BackColor = ThemeSidebar };
+        FlowLayoutPanel items = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            BackColor = ThemeSidebar, Padding = new Padding(S(11), S(11), S(6), S(8)) };
+        AddNavigationSection(items, "快速开始");
+        AddNavigationItem(items, settings, "设置与启动", "路径、画质与运行模式");
+        AddNavigationItem(items, seamless, "✦  在线无缝联机", "一键检测、连接与启动");
+        AddNavigationSection(items, "联机方式");
+        AddNavigationItem(items, online, "传统在线联机", "传统召唤和在线列表");
+        AddNavigationItem(items, lan, "局域网联机", "手动建立局域网连接");
+        AddNavigationSection(items, "个性化");
+        AddNavigationItem(items, input, "输入与手柄", "键鼠和手柄映射");
+        AddNavigationItem(items, shader, "Shader 与画面", "缓存和画面诊断");
+        AddNavigationItem(items, mods, "Mod 管理", "管理本地模组");
+        AddNavigationItem(items, saves, "存档管理", "备份、恢复与导入");
+        AddNavigationItem(items, cheats, "金手指", "仅建议单机使用");
+        AddNavigationSection(items, "支持");
+        AddNavigationItem(items, version, "版本与更新", "当前版本与更新记录");
+        AddNavigationItem(items, issues, "已知问题", "常见问题与排查");
+        AddNavigationItem(items, help, "帮助", "使用说明与指引");
+        AddNavigationItem(items, logs, "运行日志", "查看启动与游戏日志");
+        sidebar.Controls.Add(items);
+        return sidebar;
+    }
+
+    void AddNavigationSection(FlowLayoutPanel items, string title) {
+        items.Controls.Add(new Label { Text = title, AutoSize = false, Width = S(163), Height = S(29),
+            TextAlign = ContentAlignment.BottomLeft, ForeColor = ThemeMuted,
+            Font = new Font(Font.FontFamily, 8f, FontStyle.Bold),
+            Margin = new Padding(S(9), S(8), 0, S(2)) });
+    }
+
+    void AddNavigationItem(FlowLayoutPanel items, TabPage page, string title, string description) {
+        Button button = new Button { Text = title, Tag = page, Width = S(163), Height = S(38),
+            TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat,
+            FlatAppearance = { BorderSize = 0 },
+            Font = new Font(Font.FontFamily, 9.5f), Cursor = Cursors.Hand,
+            Margin = new Padding(S(2), S(1), 0, S(2)), Padding = new Padding(S(10), 0, 0, 0) };
+        button.Click += delegate { tabs.SelectedTab = page; };
+        navigationButtons[page] = button;
+        navigationDescriptions[page] = description;
+        items.Controls.Add(button);
+    }
+
+    void UpdateNavigation() {
+        TabPage selected = tabs.SelectedTab;
+        foreach (KeyValuePair<TabPage, Button> item in navigationButtons) {
+            bool active = item.Key == selected;
+            item.Value.BackColor = active ? ThemeGold : ThemeSidebar;
+            item.Value.ForeColor = active ? Color.White : ThemeText;
+            item.Value.FlatAppearance.MouseOverBackColor = active ? Color.FromArgb(143, 64, 65) :
+                Color.FromArgb(229, 221, 213);
+        }
+        Button current;
+        if (selected != null && navigationButtons.TryGetValue(selected, out current)) {
+            pageHeading.Text = current.Text.TrimStart('✦', ' ');
+            pageDescription.Text = navigationDescriptions[selected];
+        }
+    }
+
+    void ApplyTheme(Control parent) {
+        foreach (Control control in parent.Controls) {
+            if (control is TableLayoutPanel || control is FlowLayoutPanel)
+                control.BackColor = control.Parent.BackColor;
+            if (control is Button && !(control.Tag is TabPage)) {
+                Button button = (Button)control;
+                button.FlatStyle = FlatStyle.Flat;
+                button.FlatAppearance.BorderColor = Color.FromArgb(215, 205, 196);
+                button.FlatAppearance.BorderSize = 1;
+                button.FlatAppearance.MouseOverBackColor = Color.FromArgb(246, 239, 233);
+                button.BackColor = Color.White;
+                button.ForeColor = ThemeText;
+                button.Cursor = Cursors.Hand;
+                button.Padding = new Padding(S(8), S(4), S(8), S(4));
+                button.Margin = new Padding(S(3));
+            } else if (control is TextBox || control is RichTextBox || control is ComboBox ||
+                control is NumericUpDown || control is ListView) {
+                control.BackColor = ThemeInput;
+                control.ForeColor = ThemeText;
+                if (control is ComboBox) ((ComboBox)control).FlatStyle = FlatStyle.Flat;
+            } else if (control is LinkLabel) {
+                ((LinkLabel)control).LinkColor = ThemeGold;
+            } else if (control is Label && control.ForeColor == SystemColors.ControlText) {
+                control.ForeColor = ThemeText;
+            }
+            ApplyTheme(control);
+        }
+    }
+
+    void StylePrimaryButton(Button button) {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(143, 64, 65);
+        button.BackColor = ThemeGold;
+        button.ForeColor = Color.White;
+        button.Padding = new Padding(S(13), S(6), S(13), S(6));
+        button.Font = new Font(Font.FontFamily, 9f, FontStyle.Bold);
     }
 
     void ApplyQualityProfile(string profile) {
@@ -1733,8 +1902,10 @@ sealed class MainForm : Form {
     }
 
     TableLayoutPanel Group(string title, int columns) {
-        GroupBox box = new GroupBox { Text = title, Dock = DockStyle.Top, AutoSize = true,
-            Padding = new Padding(S(8)), AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(8)) };
+        GroupBox box = new LauncherCard { Text = title, Dock = DockStyle.Top, AutoSize = true,
+            BackColor = Color.White, ForeColor = ThemeGold,
+            Padding = new Padding(S(16), S(22), S(16), S(14)),
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(12)) };
         TableLayoutPanel grid = new TableLayoutPanel { ColumnCount = columns, Dock = DockStyle.Fill, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
