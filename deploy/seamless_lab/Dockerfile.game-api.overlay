@@ -1,0 +1,7 @@
+# Offline repair layer for a server that already has the pinned BBSC image.
+# Build with the existing bbport-bbsc-game-api:seamless-lab image available.
+FROM bbport-bbsc-game-api:seamless-lab
+
+COPY lab_server.py /app/lab_server.py
+
+ENTRYPOINT ["python", "/app/lab_server.py"]

@@ -11,6 +11,7 @@ services:
     restart: unless-stopped
     environment:
       SHADNET_SEAMLESS: "true"
+      SHADNET_BBSC_EXACT_SUMMON_WORD: "true"
     ports:
       - "${SEAMLESS_BIND_IP:-127.0.0.1}:32313:31313/tcp"
       - "${SEAMLESS_BIND_IP:-127.0.0.1}:32314:31314/udp"
@@ -39,7 +40,7 @@ services:
     volumes:
       - seamless-game-data:/var/lib/bbsc
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',32443),2); s.close()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:32443/bb-eu/ss.info', timeout=2).read(1)"]
       interval: 15s
       timeout: 5s
       retries: 6

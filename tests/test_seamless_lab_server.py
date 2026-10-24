@@ -51,6 +51,93 @@ class SeamlessLabServerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 lab_server.patch_region_response(server)
 
+    def test_relay_lifecycle_patch_bounds_clients_and_evicts_blocked_peers(self):
+        upstream = '''RELAY_CLIENTS = {}
+RELAY_LOCK = threading.Lock()
+
+def _relay_announce():
+    with RELAY_LOCK:
+        clients = list(RELAY_CLIENTS.items())
+    for conn, _ in clients:
+        try:
+            _relay_send(conn, bytes([0x7F, min(len(clients) - 1, 255)]))
+        except OSError:
+            pass
+
+def _relay_send(conn, payload):
+    conn.sendall(struct.pack("<I", len(payload)) + payload)
+
+def _relay_client(conn, address):
+    name = "{}:{}".format(*address)
+    with RELAY_LOCK:
+        RELAY_CLIENTS[conn] = name
+    print("      relay: {} connected ({} player(s))".format(name, len(RELAY_CLIENTS)), flush=True)
+    _relay_announce()
+    frames = 0
+    try:
+        while True:
+            header = _recv_exact(conn, 4)
+            if header is None:
+                break
+            size = struct.unpack("<I", header)[0]
+            if size > 64 * 1024:
+                break
+            payload = _recv_exact(conn, size) if size else b""
+            if payload is None:
+                break
+            frames += 1
+            with RELAY_LOCK:
+                others = [c for c in RELAY_CLIENTS if c is not conn]
+            for other in others:
+                try:
+                    _relay_send(other, payload)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    finally:
+        with RELAY_LOCK:
+            RELAY_CLIENTS.pop(conn, None)
+            left = len(RELAY_CLIENTS)
+        try:
+            conn.close()
+        except OSError:
+            pass
+        print("      relay: {} left after {} frames ({} player(s))".format(name, frames, left), flush=True)
+        _relay_announce()
+
+def start_relay(host, port):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((host, port))
+    listener.listen(16)
+
+    def accept_loop():
+        while True:
+            conn, address = listener.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            threading.Thread(target=_relay_client, args=(conn, address), daemon=True).start()
+'''
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            server = Path(directory) / "bbsc_gameserver.py"
+            server.write_text(upstream, encoding="utf-8")
+            lab_server.patch_relay_lifecycle(server)
+            first = server.read_text(encoding="utf-8")
+            lab_server.patch_relay_lifecycle(server)
+            self.assertEqual(server.read_text(encoding="utf-8"), first)
+            self.assertIn("MAX_RELAY_CLIENTS = 128", first)
+            self.assertIn("struct.pack(\"@ll\", RELAY_SEND_TIMEOUT_SECONDS, 0)", first)
+            self.assertIn("def _relay_drop(conn):", first)
+            self.assertIn("_relay_drop(other)", first)
+            self.assertIn("at_capacity = len(RELAY_CLIENTS) >= MAX_RELAY_CLIENTS", first)
+
+    def test_relay_lifecycle_patch_rejects_unexpected_upstream(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            server = Path(directory) / "bbsc_gameserver.py"
+            server.write_text("changed upstream", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                lab_server.patch_relay_lifecycle(server)
+
     def test_region_specific_status_fields_and_languages(self):
         xml = ("<ss>0</ss>\n<msg2><lang3></lang3><lang19></lang19></msg2>\n"
                "<BetaTestWebUrl2><lang3>https://example.invalid/</lang3>"

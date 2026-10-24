@@ -1,0 +1,103 @@
+diff --git a/emulator/src/core/bloodborne_re.cpp b/emulator/src/core/bloodborne_re.cpp
+--- a/emulator/src/core/bloodborne_re.cpp
++++ b/emulator/src/core/bloodborne_re.cpp
+@@ -4506,3 +4506,6 @@
+ std::mutex bbsc_follow_mutex;
+ BbscFollowMessage bbsc_follow_latest{};
+ 
++// An in-place host revive has no map load; hold broadcasts long enough for the
++// next follow packet to carry the same arrival signal as a real load.
++s64 bbsc_host_inplace_respawn_ms = 0;
+@@ -4540,4 +4543,7 @@
+     }
+     last_ms = now;
+ 
++    if (bbsc_host_inplace_respawn_ms != 0 && now - bbsc_host_inplace_respawn_ms < 2'000) {
++        return;
++    }
+     if (GetSessionState() != 3) {
+@@ -4662,4 +4668,5 @@
+ // Guest side: go wherever the host says it is.
+ constexpr s64 BbscFollowAfterLoadMs = 5'000;
++std::optional<BbscTransform> ResolveLampPoint(s32 point_id); // defined below
+ 
+ void TickBbscFollowHost() {
+@@ -4672,4 +4679,5 @@
+     static u32 target_map = 0;
+     static u32 attempts_map = 0;
+     static int attempts = 0;
++    static s64 last_same_map_arrival_ms = 0;
+     if (!BbscWarpTogetherEnabled() || image_base == 0) {
+@@ -4685,4 +4693,5 @@
+         ReadValue<u8>(global, 0x1592) != 0 || GetLocalPlayerType() == 2) {
+         warping = false;
+         target_map = 0;
++        last_same_map_arrival_ms = 0;
+         return; // not a co-op guest in someone else's world (an invader does not follow)
+@@ -4766,4 +4775,5 @@
+         // The game's own summon line after the rejoin says so ("You have caught up with ..."),
+         // see TickBbscRejoinLines; keep it pointed there a little longer.
+         ArmBbscRejoinLines(true, target_map, BbscGuestRejoinGraceMs);
++        last_same_map_arrival_ms = host.arrival_ms;
+         LogBbscHostWorldFlagsDiff(target_map, "after arriving");
+@@ -4776,11 +4786,52 @@
+     }
+ 
+     if (!bbsc_join_teleport_done) {
++        last_same_map_arrival_ms = host.arrival_ms;
+         return; // the initial join still owns the guest
+     }
+     const u32 here = GetCurrentPackedMap();
+     static s64 mismatch_since_ms = 0;
+     // The host's map when both were last in the same one: a different map later means the HOST
+     // went somewhere. If only the guest walked off, the host's map is still this one.
+     static u32 shared_host_map = 0;
++    if (here == host.packed_map && host.arrival_by_load &&
++        host.arrival_map == host.packed_map && host.arrival_ms > last_same_map_arrival_ms &&
++        now - host.arrival_ms < 90'000 && settled &&
++        GetCharacterHp(GetLocalPlayerCharacter()) > 0 && host.lamp_point != -1) {
++        // Host death can revive in place, so neither side changes map. Only follow a fresh
++        // arrival at the host's actual lamp: silence alone can also mean a network hiccup.
++        const auto lamp = ResolveLampPoint(host.lamp_point);
++        const auto guest = ReadCharacterTransform(GetLocalPlayerCharacter());
++        if (lamp.has_value() && guest.has_value()) {
++            const float hx = host.arrival_x - lamp->position[0];
++            const float hy = host.arrival_y - lamp->position[1];
++            const float hz = host.arrival_z - lamp->position[2];
++            const float gx = guest->position[0] - lamp->position[0];
++            const float gy = guest->position[1] - lamp->position[1];
++            const float gz = guest->position[2] - lamp->position[2];
++            if (hx * hx + hy * hy + hz * hz < 20.0f * 20.0f) {
++                last_same_map_arrival_ms = host.arrival_ms;
++                if (gx * gx + gy * gy + gz * gz > 5.0f * 5.0f) {
++                    const u64 player = GetLocalPlayerCharacter();
++                    const u64 vtable = ReadablePointer(player, 0x08) ? ReadValue<u64>(player, 0) : 0;
++                    const u64 warp = ReadablePointer(vtable, 0x600) ? ReadValue<u64>(vtable, 0x5F8) : 0;
++                    if (IsEbootCodeAddress(warp)) {
++                        alignas(16) std::array<float, 4> position = lamp->position;
++                        alignas(16) std::array<float, 4> rotation = lamp->rotation;
++                        position[0] += 1.0f;
++                        position[3] = 1.0f;
++                        using Warp = void PS4_SYSV_ABI (*)(u64 chr, float* pos, float* rot, u32 flag);
++                        reinterpret_cast<Warp>(warp)(player, position.data(), rotation.data(), 1);
++                        WriteValue<u8>(player, 0x1E1,
++                                       static_cast<u8>(ReadValue<u8>(player, 0x1E1) | 0x02));
++                        LOG_INFO(Debug,
++                                 "BBSC warp together: guest followed same-map host respawn to lamp "
++                                 "{} in map {:#x}",
++                                 host.lamp_point, here);
++                        ArmBbscRejoinLines(true, here, BbscGuestRejoinGraceMs);
++                    }
++                }
++            }
++        }
++    }
+     if (!IsUsablePackedMap(here) || here == host.packed_map) {
+@@ -6954,4 +7011,7 @@
+              why, GetCharacterHp(player), ReadValue<s32>(player, 0x78), where, position[0],
+              position[1], position[2]);
+     bbsc_inplace_respawn_ms = SteadyNowMs();
++    if (!guest) {
++        bbsc_host_inplace_respawn_ms = bbsc_inplace_respawn_ms;
++    }
+     BbscRestockFromStorage(why);

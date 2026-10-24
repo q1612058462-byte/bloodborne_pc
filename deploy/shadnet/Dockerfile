@@ -53,6 +53,11 @@ RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-stale-claim.patch 
 COPY patches/seamless-claim-target.patch /tmp/seamless-claim-target.patch
 RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-claim-target.patch \
     && git apply --unidiff-zero /tmp/seamless-claim-target.patch
+# Treat an empty summon password as its own channel in BBSC only. The classic
+# endpoint keeps its existing matching behavior.
+COPY patches/seamless-password.patch /tmp/seamless-password.patch
+RUN cd /src && git apply --unidiff-zero --check /tmp/seamless-password.patch \
+    && git apply --unidiff-zero /tmp/seamless-password.patch
 # This pinned upstream version needs to retain the authenticated tailnet
 # source when Docker's loopback UDP port mapping rewrites the sender address.
 COPY overrides/stun_server.cpp /src/src/stun_server.cpp

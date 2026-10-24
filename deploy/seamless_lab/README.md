@@ -21,6 +21,11 @@ stops the build until the new source is reviewed. The upstream game API source i
 server image does **not** bundle BBSC DLLs or game files. The optional
 v1.7.12+ Windows offline launcher bundles the verified BBport client mod only.
 
+The isolated API wrapper also bounds relay clients (128 concurrent sockets)
+and applies a three-second send timeout. A stalled peer is removed from the
+broadcast set so one blocked write cannot retain relay threads and exhaust the
+game API's file descriptors.
+
 After Docker Desktop is running:
 
 ```powershell
