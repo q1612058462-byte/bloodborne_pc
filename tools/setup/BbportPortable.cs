@@ -54,6 +54,26 @@ sealed class Choice {
     public override string ToString() { return Text; }
 }
 
+static class LauncherPalette {
+    public static bool Dark;
+    public static Color Canvas { get { return Dark ? Color.FromArgb(23, 28, 34) : Color.FromArgb(248, 246, 243); } }
+    public static Color Surface { get { return Dark ? Color.FromArgb(35, 42, 50) : Color.White; } }
+    public static Color Sidebar { get { return Dark ? Color.FromArgb(29, 36, 44) : Color.FromArgb(241, 236, 230); } }
+    public static Color Input { get { return Dark ? Color.FromArgb(43, 52, 62) : Color.White; } }
+    public static Color Text { get { return TextFor(Dark); } }
+    public static Color Muted { get { return MutedFor(Dark); } }
+    public static Color Accent { get { return Dark ? Color.FromArgb(217, 177, 123) : Color.FromArgb(122, 48, 51); } }
+    public static Color AccentHover { get { return Dark ? Color.FromArgb(237, 199, 149) : Color.FromArgb(149, 61, 65); } }
+    public static Color AccentText { get { return Dark ? Color.FromArgb(25, 30, 36) : Color.White; } }
+    public static Color Border { get { return Dark ? Color.FromArgb(109, 123, 137) : Color.FromArgb(158, 143, 133); } }
+    public static Color Hover { get { return Dark ? Color.FromArgb(59, 69, 80) : Color.FromArgb(239, 230, 221); } }
+    public static Color TextFor(bool dark) { return dark ? Color.FromArgb(240, 239, 236) : Color.FromArgb(43, 43, 47); }
+    public static Color MutedFor(bool dark) { return dark ? Color.FromArgb(193, 196, 198) : Color.FromArgb(100, 96, 94); }
+    public static Color Success(bool dark) { return dark ? Color.FromArgb(112, 214, 171) : Color.FromArgb(35, 119, 84); }
+    public static Color Warning(bool dark) { return dark ? Color.FromArgb(255, 190, 109) : Color.FromArgb(174, 96, 31); }
+    public static Color Danger(bool dark) { return dark ? Color.FromArgb(255, 132, 137) : Color.FromArgb(170, 53, 54); }
+}
+
 // The visual shell stays in WinForms so the portable launcher needs no WebView runtime.
 sealed class LauncherHero : Panel {
     public Image Artwork;
@@ -74,12 +94,12 @@ sealed class LauncherHero : Panel {
         using (Brush shade = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(245, 16, 20, 28), Color.FromArgb(72, 16, 20, 28), LinearGradientMode.Horizontal))
             g.FillRectangle(shade, ClientRectangle);
-        using (Font eyebrow = new Font("Segoe UI", 8.5f, FontStyle.Bold))
-        using (Font headline = new Font("Microsoft YaHei UI", 22f, FontStyle.Bold))
-        using (Font caption = new Font("Microsoft YaHei UI", 9f)) {
+        using (Font eyebrow = new Font("Segoe UI", 9f, FontStyle.Bold))
+        using (Font headline = new Font("Microsoft YaHei UI", 24f, FontStyle.Bold))
+        using (Font caption = new Font("Microsoft YaHei UI", 10f)) {
             TextRenderer.DrawText(g, "XIYUHANYAN  /  WINDOWS PORT", eyebrow,
                 new Point(px(26), px(19)), Color.FromArgb(219, 181, 127));
-            TextRenderer.DrawText(g, "猎人之夜  ·  Bloodborne PC", headline,
+            TextRenderer.DrawText(g, "老猎人  ·  Bloodborne PC", headline,
                 new Point(px(23), px(40)), Color.WhiteSmoke);
             TextRenderer.DrawText(g, "整合、联机与冒险，从这里开始" +
                 (Version.Length == 0 ? "" : "    ·    v" + Version), caption,
@@ -94,9 +114,9 @@ sealed class LauncherCard : GroupBox {
         if (Width <= 0 || Height <= 0) return;
         Graphics g = e.Graphics;
         g.Clear(BackColor);
-        using (Pen border = new Pen(Color.FromArgb(223, 216, 207)))
+        using (Pen border = new Pen(LauncherPalette.Border, 1.5f))
             g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
-        using (Brush accent = new SolidBrush(Color.FromArgb(128, 48, 51)))
+        using (Brush accent = new SolidBrush(LauncherPalette.Accent))
             g.FillRectangle(accent, 0, 0, 4, Height);
         TextRenderer.DrawText(g, Text, Font, new Rectangle(16, 8, Math.Max(0, Width - 28), 24),
             ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -662,17 +682,78 @@ static class SaveTools {
     }
 }
 
+sealed class GameDirectoryCandidate {
+    public readonly string Path;
+    public readonly string TitleId;
+    public GameDirectoryCandidate(string path, string titleId) { Path = path; TitleId = titleId; }
+    public override string ToString() { return "[" + TitleId + "]  " + Path; }
+}
+
+sealed class GameDirectorySearchResult {
+    public readonly List<GameDirectoryCandidate> Candidates = new List<GameDirectoryCandidate>();
+    public int Scanned;
+    public bool Incomplete;
+}
+
+static class GameDirectoryFinder {
+    const int MaxDepth = 8;
+    const int MaxFolders = 10000;
+    const int MaxCandidates = 24;
+
+    public static GameDirectorySearchResult Search(string parent) {
+        string root = Path.GetFullPath(parent);
+        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("所选父目录不存在：" + root);
+        GameDirectorySearchResult result = new GameDirectorySearchResult();
+        Queue<KeyValuePair<string, int>> folders = new Queue<KeyValuePair<string, int>>();
+        folders.Enqueue(new KeyValuePair<string, int>(root, 0));
+        Stopwatch watch = Stopwatch.StartNew();
+        while (folders.Count > 0) {
+            if (result.Scanned >= MaxFolders || watch.Elapsed > TimeSpan.FromSeconds(30)) {
+                result.Incomplete = true;
+                break;
+            }
+            KeyValuePair<string, int> next = folders.Dequeue();
+            ++result.Scanned;
+            try {
+                if (File.Exists(System.IO.Path.Combine(next.Key, "eboot.bin")) &&
+                    File.Exists(System.IO.Path.Combine(next.Key, "sce_sys", "param.sfo"))) {
+                    string titleId = SaveTools.ReadTitleId(next.Key);
+                    if (titleId.Length > 0) {
+                        result.Candidates.Add(new GameDirectoryCandidate(next.Key, titleId));
+                        if (result.Candidates.Count >= MaxCandidates) { result.Incomplete = true; break; }
+                        continue; // Do not crawl the large game-content tree below a confirmed game.
+                    }
+                }
+                if (next.Value >= MaxDepth) { result.Incomplete = true; continue; }
+                string[] children = Directory.GetDirectories(next.Key);
+                Array.Sort(children, StringComparer.OrdinalIgnoreCase);
+                foreach (string child in children) {
+                    try {
+                        if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
+                            folders.Enqueue(new KeyValuePair<string, int>(child, next.Value + 1));
+                    } catch (UnauthorizedAccessException) { }
+                    catch (IOException) { }
+                    catch (System.Security.SecurityException) { }
+                }
+            } catch (UnauthorizedAccessException) { }
+            catch (IOException) { }
+            catch (System.Security.SecurityException) { }
+        }
+        return result;
+    }
+}
+
 sealed class MainForm : Form {
     const string TitleText = "Bloodborne PC 中文安装与启动器";
-    static readonly Color ThemeInput = Color.White;
-    static readonly Color ThemeText = Color.FromArgb(43, 43, 47);
-    static readonly Color ThemeMuted = Color.FromArgb(109, 106, 105);
-    static readonly Color ThemeGold = Color.FromArgb(122, 48, 51);
-    static readonly Color ThemeCanvas = Color.FromArgb(248, 246, 243);
-    static readonly Color ThemeSidebar = Color.FromArgb(241, 236, 230);
-    static readonly Color ThemeSuccess = Color.FromArgb(35, 119, 84);
-    static readonly Color ThemeWarning = Color.FromArgb(174, 96, 31);
-    static readonly Color ThemeDanger = Color.FromArgb(170, 53, 54);
+    static Color ThemeInput { get { return LauncherPalette.Input; } }
+    static Color ThemeText { get { return LauncherPalette.Text; } }
+    static Color ThemeMuted { get { return LauncherPalette.Muted; } }
+    static Color ThemeGold { get { return LauncherPalette.Accent; } }
+    static Color ThemeCanvas { get { return LauncherPalette.Canvas; } }
+    static Color ThemeSidebar { get { return LauncherPalette.Sidebar; } }
+    static Color ThemeSuccess { get { return LauncherPalette.Success(LauncherPalette.Dark); } }
+    static Color ThemeWarning { get { return LauncherPalette.Warning(LauncherPalette.Dark); } }
+    static Color ThemeDanger { get { return LauncherPalette.Danger(LauncherPalette.Dark); } }
     const string PayloadResource = "bbport_payload.zip";
     const string InstalledExeName = "Bloodborne-PC-中文启动器.exe";
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
@@ -801,6 +882,9 @@ sealed class MainForm : Form {
     readonly float scale;
     readonly string stateFile;
     TextBox rootBox, gameBox, logBox;
+    ComboBox themeCombo;
+    Button gameSearchButton;
+    RichTextBox releaseNotesBox;
     Label gameStatus, statusLabel;
     ComboBox coreMode;
     ComboBox resolution, frameRate, upscaler, preset, live, modelLod, presentMode;
@@ -870,6 +954,7 @@ sealed class MainForm : Form {
     string lastRunLog;
     string expectedProbeHash;
     readonly ConcurrentQueue<string> pending = new ConcurrentQueue<string>();
+    bool gameSearchInProgress;
     readonly System.Windows.Forms.Timer pump = new System.Windows.Forms.Timer();
     readonly string welcomeFile;
     bool currentRunPublic;
@@ -947,8 +1032,9 @@ sealed class MainForm : Form {
         string stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BloodbornePC");
         stateFile = Path.Combine(stateDir, "launcher.ini");
         welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
+        LauncherPalette.Dark = Get(ReadValues(stateFile), "ui_theme", "light") == "dark";
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
-        Font = new Font("Microsoft YaHei UI", 9f);
+        Font = new Font("Microsoft YaHei UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(S(1120), S(790));
         MinimumSize = new Size(S(900), S(650));
@@ -1037,10 +1123,22 @@ sealed class MainForm : Form {
         AddSpan(folders, Note("程序、运行库、存档、模组和配置保存在这里；不会复制或修改游戏本体。建议至少预留 450 MB。"));
         gameBox = new TextBox { Dock = DockStyle.Fill };
         gameBox.TextChanged += delegate { CheckGame(); };
-        AddRow(folders, "游戏本体目录", gameBox, Browse(gameBox, "选择包含 eboot.bin 和 sce_sys 的 Bloodborne v1.09 游戏目录"));
+        gameSearchButton = new Button { Text = "从父目录搜索…", AutoSize = true };
+        gameSearchButton.Click += delegate { ChooseGameParentAndSearch(); };
+        AddRow(folders, "游戏本体目录", gameBox,
+            Flow(Browse(gameBox, "选择包含 eboot.bin 和 sce_sys 的 Bloodborne v1.09 游戏目录"), gameSearchButton));
         gameStatus = Note("");
         AddSpan(folders, gameStatus);
+        AddSpan(folders, Note("不知道游戏在哪？选择一个上级文件夹，启动器会查找游戏目录并让你确认。只读取文件名与游戏标识，不修改游戏文件。"));
         column.Controls.Add(folders.Parent);
+
+        TableLayoutPanel appearance = Group("界面外观", 2);
+        themeCombo = Combo(appearance, "主题", new Choice[] {
+            new Choice("亮色", "light"), new Choice("暗色", "dark") });
+        SelectValue(themeCombo, LauncherPalette.Dark ? "dark" : "light");
+        themeCombo.SelectedIndexChanged += delegate { SetTheme(Value(themeCombo) == "dark", true); };
+        AddSpan(appearance, Note("主题切换会立即生效，并记住你的选择；不影响游戏画面设置。"));
+        column.Controls.Add(appearance.Parent);
 
         TableLayoutPanel core = Group("启动核心", 2);
         coreMode = Combo(core, "运行模式", CoreModes);
@@ -1698,6 +1796,7 @@ sealed class MainForm : Form {
             ScrollBars = RichTextBoxScrollBars.Vertical, WordWrap = true, Dock = DockStyle.Fill,
             BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle, DetectUrls = false,
             Font = new Font(Font.FontFamily, 9.5f, FontStyle.Regular) };
+        releaseNotesBox = notes;
         FormatReleaseNotes(notes);
         versionColumn.Controls.Add(versionLabel, 0, 0);
         versionColumn.Controls.Add(versionHint, 0, 1);
@@ -1709,7 +1808,8 @@ sealed class MainForm : Form {
         logPage.Controls.Add(logBox);
 
         TableLayoutPanel bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, ColumnCount = 1, AutoSize = true,
-            BackColor = Color.White, Padding = new Padding(S(18), S(8), S(18), S(12)) };
+            Tag = "surface", BackColor = LauncherPalette.Surface,
+            Padding = new Padding(S(18), S(8), S(18), S(12)) };
         statusLabel = new Label { AutoSize = true, ForeColor = ThemeMuted,
             Text = "请选择游戏本体目录，然后安装运行环境。", Margin = new Padding(0, 0, 0, S(7)) };
         progress = new ProgressBar { Dock = DockStyle.Fill, Height = S(5), Style = ProgressBarStyle.Continuous,
@@ -1727,13 +1827,14 @@ sealed class MainForm : Form {
         bottom.Controls.Add(statusLabel);
         bottom.Controls.Add(progress);
         bottom.Controls.Add(buttons);
-        Panel content = new Panel { Dock = DockStyle.Fill, BackColor = ThemeCanvas };
-        Panel pageHeader = new Panel { Dock = DockStyle.Top, Height = S(72), BackColor = Color.White,
+        Panel content = new Panel { Dock = DockStyle.Fill, Tag = "canvas", BackColor = ThemeCanvas };
+        Panel pageHeader = new Panel { Dock = DockStyle.Top, Height = S(72), Tag = "surface",
+            BackColor = LauncherPalette.Surface,
             Padding = new Padding(S(22), S(10), S(18), S(8)) };
         pageHeading = new Label { AutoSize = true, Location = new Point(S(22), S(10)),
-            ForeColor = ThemeText, Font = new Font(Font.FontFamily, 15f, FontStyle.Bold) };
+            ForeColor = ThemeText, Font = new Font(Font.FontFamily, 16f, FontStyle.Bold) };
         pageDescription = new Label { AutoSize = true, Location = new Point(S(23), S(43)),
-            ForeColor = ThemeMuted, Font = new Font(Font.FontFamily, 8.5f) };
+            ForeColor = ThemeMuted, Font = new Font(Font.FontFamily, 9.5f) };
         pageHeader.Controls.Add(pageHeading);
         pageHeader.Controls.Add(pageDescription);
         content.Controls.Add(tabs);
@@ -1745,7 +1846,7 @@ sealed class MainForm : Form {
         Controls.Add(bottom);
         Controls.Add(new LauncherHero { Dock = DockStyle.Top, Height = S(136), Artwork = background,
             Version = PackageVersion });
-        ApplyTheme(this);
+        ApplyTheme(this, LauncherPalette.Dark);
         StylePrimaryButton(playButton);
         StylePrimaryButton(seamlessQuickButton);
         StylePrimaryButton(onlineQuickButton);
@@ -1758,7 +1859,8 @@ sealed class MainForm : Form {
     Panel BuildNavigation(TabPage settings, TabPage seamless, TabPage lan, TabPage online,
         TabPage input, TabPage mods, TabPage saves, TabPage cheats, TabPage shader,
         TabPage version, TabPage issues, TabPage help, TabPage logs) {
-        Panel sidebar = new Panel { Dock = DockStyle.Left, Width = S(194), BackColor = ThemeSidebar };
+        Panel sidebar = new Panel { Dock = DockStyle.Left, Width = S(194), Tag = "sidebar",
+            BackColor = ThemeSidebar };
         FlowLayoutPanel items = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true,
             FlowDirection = FlowDirection.TopDown, WrapContents = false,
             BackColor = ThemeSidebar, Padding = new Padding(S(11), S(11), S(6), S(8)) };
@@ -1786,7 +1888,7 @@ sealed class MainForm : Form {
     void AddNavigationSection(FlowLayoutPanel items, string title) {
         items.Controls.Add(new Label { Text = title, AutoSize = false, Width = S(163), Height = S(29),
             TextAlign = ContentAlignment.BottomLeft, ForeColor = ThemeMuted,
-            Font = new Font(Font.FontFamily, 8f, FontStyle.Bold),
+            Font = new Font(Font.FontFamily, 8.8f, FontStyle.Bold),
             Margin = new Padding(S(9), S(8), 0, S(2)) });
     }
 
@@ -1794,7 +1896,7 @@ sealed class MainForm : Form {
         Button button = new Button { Text = title, Tag = page, Width = S(163), Height = S(38),
             TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat,
             FlatAppearance = { BorderSize = 0 },
-            Font = new Font(Font.FontFamily, 9.5f), Cursor = Cursors.Hand,
+            Font = new Font(Font.FontFamily, 10f), Cursor = Cursors.Hand,
             Margin = new Padding(S(2), S(1), 0, S(2)), Padding = new Padding(S(10), 0, 0, 0) };
         button.Click += delegate { tabs.SelectedTab = page; };
         navigationButtons[page] = button;
@@ -1807,9 +1909,8 @@ sealed class MainForm : Form {
         foreach (KeyValuePair<TabPage, Button> item in navigationButtons) {
             bool active = item.Key == selected;
             item.Value.BackColor = active ? ThemeGold : ThemeSidebar;
-            item.Value.ForeColor = active ? Color.White : ThemeText;
-            item.Value.FlatAppearance.MouseOverBackColor = active ? Color.FromArgb(143, 64, 65) :
-                Color.FromArgb(229, 221, 213);
+            item.Value.ForeColor = active ? LauncherPalette.AccentText : ThemeText;
+            item.Value.FlatAppearance.MouseOverBackColor = active ? LauncherPalette.AccentHover : LauncherPalette.Hover;
         }
         Button current;
         if (selected != null && navigationButtons.TryGetValue(selected, out current)) {
@@ -1818,17 +1919,47 @@ sealed class MainForm : Form {
         }
     }
 
-    void ApplyTheme(Control parent) {
+    void SetTheme(bool dark, bool persist) {
+        if (LauncherPalette.Dark == dark) return;
+        bool previousDark = LauncherPalette.Dark;
+        LauncherPalette.Dark = dark;
+        BackColor = ThemeCanvas;
+        ApplyTheme(this, previousDark);
+        StylePrimaryButton(playButton);
+        StylePrimaryButton(seamlessQuickButton);
+        StylePrimaryButton(onlineQuickButton);
+        UpdateNavigation();
+        if (releaseNotesBox != null) FormatReleaseNotes(releaseNotesBox);
+        Invalidate(true);
+        if (persist) {
+            try {
+                Dictionary<string, string> state = ReadValues(stateFile);
+                state["ui_theme"] = dark ? "dark" : "light";
+                Directory.CreateDirectory(Path.GetDirectoryName(stateFile));
+                WriteSimple(stateFile, state);
+            } catch (Exception e) { Warn("保存界面主题失败：" + e.Message); }
+        }
+    }
+
+    void ApplyTheme(Control parent, bool previousDark) {
         foreach (Control control in parent.Controls) {
-            if (control is TableLayoutPanel || control is FlowLayoutPanel)
+            string role = control.Tag as string;
+            if (control is TabPage || role == "canvas") control.BackColor = ThemeCanvas;
+            else if (role == "surface") control.BackColor = LauncherPalette.Surface;
+            else if (role == "sidebar") control.BackColor = ThemeSidebar;
+            else if (control is LauncherCard) {
+                control.BackColor = LauncherPalette.Surface;
+                control.ForeColor = ThemeGold;
+                control.Invalidate();
+            } else if (control is TableLayoutPanel || control is FlowLayoutPanel)
                 control.BackColor = control.Parent.BackColor;
             if (control is Button && !(control.Tag is TabPage)) {
                 Button button = (Button)control;
                 button.FlatStyle = FlatStyle.Flat;
-                button.FlatAppearance.BorderColor = Color.FromArgb(215, 205, 196);
+                button.FlatAppearance.BorderColor = LauncherPalette.Border;
                 button.FlatAppearance.BorderSize = 1;
-                button.FlatAppearance.MouseOverBackColor = Color.FromArgb(246, 239, 233);
-                button.BackColor = Color.White;
+                button.FlatAppearance.MouseOverBackColor = LauncherPalette.Hover;
+                button.BackColor = LauncherPalette.Surface;
                 button.ForeColor = ThemeText;
                 button.Cursor = Cursors.Hand;
                 button.Padding = new Padding(S(8), S(4), S(8), S(4));
@@ -1838,23 +1969,35 @@ sealed class MainForm : Form {
                 control.BackColor = ThemeInput;
                 control.ForeColor = ThemeText;
                 if (control is ComboBox) ((ComboBox)control).FlatStyle = FlatStyle.Flat;
+                if (control is TextBox) ((TextBox)control).BorderStyle = BorderStyle.FixedSingle;
+                if (control is ListView) ((ListView)control).BorderStyle = BorderStyle.FixedSingle;
             } else if (control is LinkLabel) {
                 ((LinkLabel)control).LinkColor = ThemeGold;
-            } else if (control is Label && control.ForeColor == SystemColors.ControlText) {
+            } else if (control is Label) {
+                if (control.ForeColor == LauncherPalette.Success(previousDark)) control.ForeColor = ThemeSuccess;
+                else if (control.ForeColor == LauncherPalette.Warning(previousDark)) control.ForeColor = ThemeWarning;
+                else if (control.ForeColor == LauncherPalette.Danger(previousDark)) control.ForeColor = ThemeDanger;
+                else if (control.ForeColor == LauncherPalette.MutedFor(previousDark) ||
+                    control.ForeColor == SystemColors.GrayText) control.ForeColor = ThemeMuted;
+                else if (control.ForeColor == LauncherPalette.TextFor(previousDark) ||
+                    control.ForeColor == SystemColors.ControlText ||
+                    control.ForeColor == SystemColors.WindowText) control.ForeColor = ThemeText;
+            } else if (control is CheckBox || control is RadioButton) {
+                control.BackColor = control.Parent.BackColor;
                 control.ForeColor = ThemeText;
             }
-            ApplyTheme(control);
+            ApplyTheme(control, previousDark);
         }
     }
 
     void StylePrimaryButton(Button button) {
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(143, 64, 65);
+        button.FlatAppearance.MouseOverBackColor = LauncherPalette.AccentHover;
         button.BackColor = ThemeGold;
-        button.ForeColor = Color.White;
+        button.ForeColor = LauncherPalette.AccentText;
         button.Padding = new Padding(S(13), S(6), S(13), S(6));
-        button.Font = new Font(Font.FontFamily, 9f, FontStyle.Bold);
+        button.Font = new Font(Font.FontFamily, 9.5f, FontStyle.Bold);
     }
 
     void ApplyQualityProfile(string profile) {
@@ -1903,7 +2046,7 @@ sealed class MainForm : Form {
 
     TableLayoutPanel Group(string title, int columns) {
         GroupBox box = new LauncherCard { Text = title, Dock = DockStyle.Top, AutoSize = true,
-            BackColor = Color.White, ForeColor = ThemeGold,
+            BackColor = LauncherPalette.Surface, ForeColor = ThemeGold,
             Padding = new Padding(S(16), S(22), S(16), S(14)),
             AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(12)) };
         TableLayoutPanel grid = new TableLayoutPanel { ColumnCount = columns, Dock = DockStyle.Fill, AutoSize = true,
@@ -2007,6 +2150,89 @@ sealed class MainForm : Form {
             }
         };
         return button;
+    }
+
+    void ChooseGameParentAndSearch() {
+        if (busy || gameSearchInProgress) return;
+        using (FolderBrowserDialog dialog = new FolderBrowserDialog {
+            Description = "选择包含游戏目录的上级文件夹；最多搜索 8 层。",
+            ShowNewFolderButton = false
+        }) {
+            string current = gameBox.Text.Trim().Trim('"');
+            if (Directory.Exists(current)) {
+                string initial = System.IO.Path.GetDirectoryName(current);
+                if (!string.IsNullOrEmpty(initial) && Directory.Exists(initial)) dialog.SelectedPath = initial;
+            }
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            string parent = dialog.SelectedPath;
+            gameSearchInProgress = true;
+            UpdateButtons();
+            statusLabel.Text = "正在搜索游戏目录（最多 30 秒），请稍候……";
+            Thread worker = new Thread(delegate() {
+                GameDirectorySearchResult result = null;
+                Exception error = null;
+                try { result = GameDirectoryFinder.Search(parent); }
+                catch (Exception e) { error = e; }
+                if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)delegate {
+                    gameSearchInProgress = false;
+                    UpdateButtons();
+                    if (error != null) { Warn("搜索游戏目录失败：" + error.Message); return; }
+                    if (result.Candidates.Count == 0) {
+                        MessageBox.Show(this, "未找到可识别的 Bloodborne 游戏目录。" +
+                            (result.Incomplete ? "\r\n搜索已达时间、数量或深度上限；请选择更接近游戏的父目录重试。" :
+                                "\r\n请确认目录中包含 eboot.bin 和 sce_sys\\param.sfo。"),
+                            TitleText, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        statusLabel.Text = "搜索完成：未找到游戏目录。";
+                        return;
+                    }
+                    GameDirectoryCandidate chosen = ChooseGameCandidate(result);
+                    if (chosen == null) { statusLabel.Text = "已取消选择游戏目录。"; return; }
+                    gameBox.Text = chosen.Path;
+                    statusLabel.Text = "已选择游戏目录（" + chosen.TitleId + "）；保存设置后生效。";
+                });
+            });
+            worker.IsBackground = true;
+            worker.Start();
+        }
+    }
+
+    GameDirectoryCandidate ChooseGameCandidate(GameDirectorySearchResult result) {
+        using (Form picker = new Form { Text = "选择 Bloodborne 游戏目录", Font = Font,
+            ClientSize = new Size(S(850), S(340)), MinimumSize = new Size(S(600), S(290)),
+            StartPosition = FormStartPosition.CenterParent, BackColor = LauncherPalette.Surface,
+            ForeColor = ThemeText, FormBorderStyle = FormBorderStyle.Sizable }) {
+            TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1,
+                Padding = new Padding(S(16)), BackColor = LauncherPalette.Surface };
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            Label help = new Label { AutoSize = true, ForeColor = ThemeMuted,
+                Text = "找到 " + result.Candidates.Count + " 个游戏目录。请选择要使用的版本；不会移动或修改文件。" +
+                    (result.Incomplete ? " 搜索已达到上限，结果可能不完整。" : "") };
+            ListBox list = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false,
+                HorizontalScrollbar = true, BackColor = ThemeInput, ForeColor = ThemeText,
+                BorderStyle = BorderStyle.FixedSingle };
+            foreach (GameDirectoryCandidate candidate in result.Candidates) list.Items.Add(candidate);
+            list.SelectedIndex = 0;
+            FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
+                FlowDirection = FlowDirection.RightToLeft, BackColor = LauncherPalette.Surface };
+            Button use = new Button { Text = "使用所选目录", AutoSize = true, DialogResult = DialogResult.OK };
+            Button cancel = new Button { Text = "取消", AutoSize = true, DialogResult = DialogResult.Cancel,
+                FlatStyle = FlatStyle.Flat, BackColor = LauncherPalette.Surface, ForeColor = ThemeText };
+            cancel.FlatAppearance.BorderColor = LauncherPalette.Border;
+            StylePrimaryButton(use);
+            actions.Controls.Add(use);
+            actions.Controls.Add(cancel);
+            layout.Controls.Add(help, 0, 0);
+            layout.Controls.Add(list, 0, 1);
+            layout.Controls.Add(actions, 0, 2);
+            picker.Controls.Add(layout);
+            picker.AcceptButton = use;
+            picker.CancelButton = cancel;
+            if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem != null)
+                return (GameDirectoryCandidate)list.SelectedItem;
+        }
+        return null;
     }
 
     static string Value(ComboBox combo) { return combo.SelectedItem == null ? "" : ((Choice)combo.SelectedItem).Value; }
@@ -4283,9 +4509,9 @@ sealed class MainForm : Form {
         string source = ReleaseNotes.Length == 0 ? "内置更新说明无法读取。" : ReleaseNotes;
         notes.Text = source.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
 
-        Font titleFont = new Font(Font.FontFamily, 13f, FontStyle.Bold);
-        Font headingFont = new Font(Font.FontFamily, 10.5f, FontStyle.Bold);
-        Font bodyFont = new Font(Font.FontFamily, 9.5f, FontStyle.Regular);
+        Font titleFont = new Font(Font.FontFamily, 14f, FontStyle.Bold);
+        Font headingFont = new Font(Font.FontFamily, 11f, FontStyle.Bold);
+        Font bodyFont = new Font(Font.FontFamily, 10f, FontStyle.Regular);
         string[] lines = notes.Lines;
         for (int i = 0; i < lines.Length; ++i) {
             int start = notes.GetFirstCharIndexFromLine(i);
@@ -4305,8 +4531,10 @@ sealed class MainForm : Form {
                 notes.SelectionFont = headingFont;
                 bool current = PackageVersion.Length > 0 && lines[i].StartsWith("v" + PackageVersion,
                     StringComparison.OrdinalIgnoreCase);
-                notes.SelectionColor = current ? Color.FromArgb(142, 42, 34) : Color.FromArgb(45, 75, 110);
-                if (current) notes.SelectionBackColor = Color.FromArgb(255, 248, 225);
+                notes.SelectionColor = current ? ThemeGold :
+                    (LauncherPalette.Dark ? Color.FromArgb(155, 193, 236) : Color.FromArgb(45, 75, 110));
+                if (current) notes.SelectionBackColor = LauncherPalette.Dark ?
+                    Color.FromArgb(59, 52, 45) : Color.FromArgb(255, 248, 225);
             } else if (lines[i].StartsWith("- ", StringComparison.Ordinal)) {
                 notes.SelectionIndent = S(14);
                 notes.SelectionRightIndent = S(8);
@@ -4480,6 +4708,7 @@ sealed class MainForm : Form {
         Dictionary<string, string> state = new Dictionary<string, string>();
         state["install_root"] = options.Root;
         state["game_dir"] = options.Game;
+        state["ui_theme"] = LauncherPalette.Dark ? "dark" : "light";
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
         state["mods_enabled"] = modsEnabled.Checked ? "1" : "0";
@@ -5151,6 +5380,7 @@ sealed class MainForm : Form {
         installButton.Enabled = !busy && !onlineSetupInProgress;
         saveButton.Enabled = !busy && !onlineSetupInProgress;
         playButton.Enabled = !busy && !onlineSetupInProgress;
+        if (gameSearchButton != null) gameSearchButton.Enabled = !busy && !gameSearchInProgress;
         if (onlineQuickButton != null)
             onlineQuickButton.Enabled = !busy && !onlineSetupInProgress && OverlayServerIp().Length != 0;
         if (seamlessQuickButton != null)
