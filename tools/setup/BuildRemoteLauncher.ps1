@@ -92,6 +92,12 @@ try {
     if (-not [System.Text.RegularExpressions.Regex]::IsMatch($buildInfo, $hashLine)) {
         throw 'BUILD_INFO.txt lacks a valid bb-probe SHA256 line.'
     }
+    $versionLine = '(?m)^Package version: \d+\.\d+\.\d+(?=\r?$)'
+    if (-not [System.Text.RegularExpressions.Regex]::IsMatch($buildInfo, $versionLine)) {
+        throw 'BUILD_INFO.txt lacks a valid package version line.'
+    }
+    $buildInfo = [System.Text.RegularExpressions.Regex]::Replace(
+        $buildInfo, $versionLine, ('Package version: ' + $version))
     $buildInfo = [System.Text.RegularExpressions.Regex]::Replace(
         $buildInfo, $hashLine, ('bb-probe SHA256: ' + $probeHash))
     Set-ZipText $zip 'BUILD_INFO.txt' $buildInfo
