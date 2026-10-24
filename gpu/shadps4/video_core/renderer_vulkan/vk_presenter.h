@@ -73,13 +73,7 @@ public:
         return swapchain.HasHDR();
     }
 
-    void SetHDR(bool enable) {
-        if (!IsHDRSupported()) {
-            return;
-        }
-        swapchain.SetHDR(enable);
-        pp_settings.hdr = enable ? 1 : 0;
-    }
+    void SetHDR(bool enable);
 
     VideoCore::Image& RegisterVideoOutSurface(
         const Libraries::VideoOut::BufferAttributeGroup& attribute, VAddr cpu_address) {
@@ -105,6 +99,7 @@ private:
     Frame* GetRenderFrame();
 
     void RecreateFrame(Frame* frame, u32 width, u32 height);
+    void RenderHdrFrame(vk::CommandBuffer cmdbuf, Frame* frame, vk::Image swapchain_image);
 
     void SetExpectedGameSize(s32 width, s32 height);
 
@@ -119,6 +114,11 @@ private:
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
+    HostPasses::PostProcessingPass hdr_pass;
+    bool hdr_output_requested = false;
+    bool hdr_output_active = false;
+    float hdr_peak_nits = 1000.0f;
+    float hdr_paper_white_nits = 200.0f;
     AmdGpu::Liverpool* liverpool;
     Scheduler draw_scheduler;
     std::deque<u64> recent_frame_ticks; ///< bbport: BB_FRAMES_AHEAD bound (PrepareFrame)

@@ -127,6 +127,12 @@ echo "Built $PWD/out/bb-probe"
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
 fi
 if [[ ${1:-} == --test ]]; then
+    "${CXX:-c++}" -std=c++23 -O0 -Wall -Wextra -Werror \
+        tests/test_vram_gc_policy.cpp -o out/vram-gc-policy-test
+    out/vram-gc-policy-test
+    "${CXX:-c++}" -std=c++23 -O0 -Wall -Wextra -Werror -Igpu/shadps4 \
+        tests/test_shader_cache_deserialization.cpp -o out/shader-cache-deserialization-test
+    out/shader-cache-deserialization-test
     network_libraries=()
     file_mod_compat=()
     test_link=(-no-pie)
@@ -134,6 +140,9 @@ if [[ ${1:-} == --test ]]; then
         network_libraries=(-lws2_32)
         file_mod_compat=(src/win32_compat.c)
         test_link=(-Wl,--disable-dynamicbase,--disable-high-entropy-va)
+        "${CXX:-c++}" -std=c++23 -O1 -Wall -Wextra -Werror \
+            tests/test_native_camera.cpp gpu/shim/bloodborne_cam.cpp -o out/native-camera-test
+        out/native-camera-test
     fi
     "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -I. -Isrc \
         tests/test_network.c src/runtime_network.c "${network_libraries[@]}" -o out/network-test

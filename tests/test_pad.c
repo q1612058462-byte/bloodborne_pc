@@ -13,6 +13,9 @@ uint64_t host_monotonic_ns(void) {
 
 static int capture;
 int bbgpu_overlay_captures_input(void) { return capture; }
+static int camera_direct, camera_locked;
+int bbgpu_camera_direct(void) { return camera_direct; }
+int bbgpu_camera_locked(void) { return camera_locked; }
 static int mouse_owned,mouse_dx,mouse_dy,mouse_wheel;
 static uint32_t mouse_buttons;
 int bbgpu_mouse_read(int32_t *dx,int32_t *dy,int32_t *wheel,uint32_t *buttons) {
@@ -57,6 +60,11 @@ int main(void) {
     envset("BB_MOUSE_MIDDLE","square");
     envset("BB_KEY_CROSS","5");
     envset("BB_KEY_TRIANGLE","0");
+    envset("BB_KEY_WALK","224");
+    envset("BB_KEY_WALK_STRENGTH","0.4");
+    envset("BB_KEY_CHORD1_MOD","228");
+    envset("BB_KEY_CHORD1_KEY","8");
+    envset("BB_KEY_CHORD1_ACTION","r1");
     envset("BB_PAD_SOUTH","triangle");
     envset("SDL_VIDEODRIVER","dummy");
     /* Only the virtual test controller is a gamepad, whatever is plugged in. */
@@ -67,6 +75,8 @@ int main(void) {
     inject(path,"cross l3 touchpad_left");
     assert(pad_read_state(1,&data)==0);
     assert(input.cross==SDL_SCANCODE_B && input.triangle==SDL_SCANCODE_UNKNOWN && input.mouse_invert_y);
+    assert(input.walk==SDL_SCANCODE_LCTRL && input.walk_strength>0.39f &&
+           input.walk_strength<0.41f);
     assert((data.buttons & (BTN_CROSS|BTN_L3|BTN_TOUCHPAD))==(BTN_CROSS|BTN_L3|BTN_TOUCHPAD));
     assert(data.touch_count==1 && data.touches[0].x==480 && data.touches[0].y==471);
     assert(data.touches[0].id!=0);
@@ -85,7 +95,60 @@ int main(void) {
     mouse_owned=1; mouse_dx=10; mouse_dy=-4; mouse_buttons=1;
     assert(pad_read_state(1,&data)==0);
     assert((data.buttons & BTN_R1) && data.right_x==148 && data.right_y==136);
+    camera_direct=1; camera_locked=0;
+    mouse_dx=10; mouse_dy=-4;
+    assert(pad_read_state(1,&data)==0);
+    assert(data.right_x==128 && data.right_y==128); /* no synthetic look stick */
+    camera_locked=1;
+    mouse_dx=10; mouse_dy=-4;
+    assert(pad_read_state(1,&data)==0);
+    assert(data.right_x==128 && data.right_y==128); /* lock-on must not drift */
+    camera_direct=camera_locked=0;
     mouse_buttons=0;
+
+    bool chord_keys[SDL_SCANCODE_COUNT]={0};
+    bool consumed[SDL_SCANCODE_COUNT]={0};
+    chord_keys[SDL_SCANCODE_RCTRL]=chord_keys[SDL_SCANCODE_E]=true;
+    PadData chord_data={0};
+    apply_keyboard_chords(&chord_data,chord_keys,consumed);
+    assert((chord_data.buttons & BTN_R1) && consumed[SDL_SCANCODE_E]);
+    chord_keys[SDL_SCANCODE_RCTRL]=false;
+    memset(consumed,0,sizeof(consumed)); chord_data.buttons=0;
+    apply_keyboard_chords(&chord_data,chord_keys,consumed);
+    assert(!chord_data.buttons && !consumed[SDL_SCANCODE_E]);
+
+    PadData movement={0};
+    movement.left_x=movement.left_y=128;
+    KeyboardTurnState turn={0};
+    keyboard_move_at(&movement,1,0,1,0,0,0,input.walk_strength,1000000,&turn);
+    assert(movement.left_x==38 && movement.left_y==38);
+    keyboard_move_at(&movement,0,1,1,0,0,0,input.walk_strength,1001000,&turn);
+    assert(movement.left_x==218 && movement.left_y==38);
+    keyboard_move_at(&movement,1,0,0,0,0,0,input.walk_strength,1002000,&turn);
+    assert(movement.left_x==1 && movement.left_y==38);
+    keyboard_move_at(&movement,1,1,1,0,0,0,input.walk_strength,1003000,&turn);
+    assert(movement.left_x==128 && movement.left_y==1);
+    movement.left_y=201; /* a keyboard X key does not erase a physical pad Y axis */
+    keyboard_move_at(&movement,1,0,0,0,0,0,input.walk_strength,1004000,&turn);
+    assert(movement.left_x==1 && movement.left_y==201);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,0,0,1,0,0,1,input.walk_strength,1005000,&turn);
+    assert(movement.left_x==128 && movement.left_y==77);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,1,0,1,0,0,1,input.walk_strength,1006000,&turn);
+    assert(movement.left_x==92 && movement.left_y==92);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,0,0,1,0,1,0,input.walk_strength,2000000,&turn);
+    assert(movement.left_x==128 && movement.left_y==1);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,1,0,1,0,1,0,input.walk_strength,2016000,&turn);
+    assert(movement.left_x>1 && movement.left_x<128 && movement.left_y==1);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,1,0,1,0,1,0,input.walk_strength,2050000,&turn);
+    assert(movement.left_x<128 && movement.left_y==1);
+    movement.left_x=movement.left_y=128;
+    keyboard_move_at(&movement,1,0,1,0,1,1,input.walk_strength,2085000,&turn);
+    assert(movement.left_x==1 && movement.left_y==1);
 
     /* Regression: an idle virtual controller listed before the real one must not steal all
      * actions. runtime_pad merges every connected gamepad instead of trusting ids[0]. */

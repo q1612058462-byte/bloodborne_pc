@@ -186,7 +186,7 @@ class Portal:
             try:
                 self.db.execute("INSERT INTO applications VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 (application_id, mac(self.secret, token), qq_hash, qq[-4:], nickname,
-                                 npid, int(bool(body.get("show_in_list", False))), state,
+                                  npid, 1, state,
                                  now, now + 3600, source_hash))
             except sqlite3.IntegrityError as exc:
                 raise ValueError("联机 ID 已被占用") from exc
@@ -276,11 +276,15 @@ class Portal:
         return {"ok": True}
 
     def snapshot(self):
-        usage = stats("/usage")
         online = stats("/online")
         now = int(time.time())
-        traditional_users = online.get("users", [])
-        traditional_active = {str(u.get("npid", "")).lower() for u in traditional_users if u.get("npid")}
+        # The directory and count must use the same identifiable live accounts.
+        # /usage counts connections, which may differ from the /online identity
+        # snapshot. Keep one entry per NPID when a player has multiple sessions.
+        traditional_users = {str(u["npid"]).lower(): u for u in online.get("users", [])
+                             if isinstance(u, dict) and isinstance(u.get("npid"), str)
+                             and u["npid"]}
+        traditional_active = set(traditional_users)
         with self.lock:
             self.seamless_presence = {npid: deadline for npid, deadline in self.seamless_presence.items()
                                       if deadline > time.time()}
@@ -298,28 +302,24 @@ class Portal:
             self.db.commit()
             self.active = active
             registered = {r["npid"].lower(): r for r in self.db.execute(
-                "SELECT npid,nickname,show_in_list FROM applications WHERE state='registered'")}
+                "SELECT npid,nickname FROM applications WHERE state='registered'")}
         users = []
-        for user in traditional_users:
-            npid = str(user.get("npid", ""))
-            record = registered.get(npid.lower())
-            if not record or not record["show_in_list"] or user.get("appear_offline", False):
-                continue
-            both_modes = npid.lower() in seamless_active
-            users.append({"npid": npid, "nickname": record["nickname"],
-                          "title_id": user.get("title_id", ""),
-                          "title_name": "Bloodborne（传统＋无缝）" if both_modes else user.get("title_name", ""),
-                          "mode": "both" if both_modes else "traditional"})
-        for npid in seamless_active - traditional_active:
+        for npid in active:
             record = registered.get(npid)
-            if record and record["show_in_list"]:
-                users.append({"npid": record["npid"], "nickname": record["nickname"],
-                              "title_id": "CUSA03173", "title_name": "Bloodborne（无缝）",
-                              "mode": "seamless"})
+            traditional = traditional_users.get(npid)
+            display_npid = record["npid"] if record else traditional["npid"] if traditional else npid
+            both_modes = traditional is not None and npid in seamless_active
+            users.append({"npid": display_npid,
+                          "nickname": record["nickname"] if record else display_npid,
+                          "title_id": traditional.get("title_id", "") if traditional else "CUSA03173",
+                          "title_name": ("Bloodborne（传统＋无缝）" if both_modes else
+                                         traditional.get("title_name", "") if traditional else
+                                         "Bloodborne（无缝）"),
+                          "mode": "both" if both_modes else
+                                  "traditional" if traditional else "seamless"})
         users.sort(key=lambda u: u["npid"].lower())
-        traditional_count = int(usage.get("total_users", 0))
-        return {"ok": True, "online_players": traditional_count + len(seamless_active - traditional_active),
-                "traditional_online_players": traditional_count,
+        return {"ok": True, "online_players": len(users),
+                "traditional_online_players": len(traditional_active),
                 "seamless_online_players": len(seamless_active),
                 "listed_players": len(users), "users": users}
 

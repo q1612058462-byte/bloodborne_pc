@@ -903,6 +903,9 @@ int main(int argc, char **argv) {
             executable_entry = 1;
     }
     if (!executable_entry) fail("entry is not executable");
+    /* The 1.09 camera hook is optional and signature-checked; it is installed
+     * before any guest thread starts, never while camera instructions run. */
+    if (!cpu_only) bbgpu_camera_install(image, size);
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
     if (native_libc) {
         for (uint64_t m=0;m<module_count;++m) {

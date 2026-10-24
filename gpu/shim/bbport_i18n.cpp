@@ -223,9 +223,8 @@ constexpr Pair kRussian[] = {
      "Только при выводе 1920 x 1080 (просмотр маски — часть этого пути)."},
     {"Menu language",
      "Язык меню"},
-    {"The language of this menu. The game's own language is set by the launcher "
-     "(BB_LANGUAGE).",
-     "Язык этого меню. Язык самой игры задаёт лаунчер (BB_LANGUAGE)."},
+    {"The language of this menu. Change the game's own language in its settings.",
+     "Язык этого меню. Язык самой игры меняется в её настройках."},
 };
 
 } // namespace

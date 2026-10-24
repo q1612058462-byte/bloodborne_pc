@@ -9,6 +9,7 @@
 #include "sdl_window.h"
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
+#include "bloodborne_cam.h"
 
 namespace Frontend {
 
@@ -54,6 +55,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 
     const char* driver = SDL_GetCurrentVideoDriver();
     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
+    hdr_enabled = SDL_GetBooleanProperty(wp, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
 #ifdef _WIN32
     if (driver && !std::strcmp(driver, "windows")) {
         window_info.type = WindowSystemType::Windows;
@@ -112,6 +114,7 @@ void WindowSDL::UpdateMouseCapture() {
     }
     mouse_owned.store(want, std::memory_order_release);
     if (!want) {
+        bbgpu_camera_clear_motion();
         mouse_dx.store(0, std::memory_order_relaxed);
         mouse_dy.store(0, std::memory_order_relaxed);
         mouse_wheel.store(0, std::memory_order_relaxed);
@@ -154,6 +157,10 @@ bool WindowSDL::PollEvents() {
             continue;
         }
         switch (event.type) {
+        case SDL_EVENT_WINDOW_HDR_STATE_CHANGED:
+            hdr_enabled = SDL_GetBooleanProperty(SDL_GetWindowProperties(window),
+                                                  SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
+            break;
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         case SDL_EVENT_WINDOW_RESIZED: {
             int w = 0, h = 0;
@@ -174,9 +181,12 @@ bool WindowSDL::PollEvents() {
             break;
         case SDL_EVENT_MOUSE_MOTION:
             if (mouse_owned.load(std::memory_order_acquire)) {
-                mouse_dx.fetch_add(static_cast<int>(std::lround(event.motion.xrel)),
+                const int dx = static_cast<int>(std::lround(event.motion.xrel));
+                const int dy = static_cast<int>(std::lround(event.motion.yrel));
+                bbgpu_camera_motion(dx, dy);
+                mouse_dx.fetch_add(dx,
                                    std::memory_order_relaxed);
-                mouse_dy.fetch_add(static_cast<int>(std::lround(event.motion.yrel)),
+                mouse_dy.fetch_add(dy,
                                    std::memory_order_relaxed);
             }
             break;

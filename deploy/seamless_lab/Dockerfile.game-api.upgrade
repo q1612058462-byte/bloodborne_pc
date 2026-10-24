@@ -1,0 +1,13 @@
+# Upgrade the live 0.0.1-based image without reinstalling Debian packages.
+# The precondition prevents silently inheriting an unrelated locally tagged image.
+FROM bbport-bbsc-game-api:seamless-lab
+
+RUN test "$(git -C /opt/bbsc rev-parse HEAD)" = "315f76c38b1ca5843b082f93f47927a9193ad94a" \
+    && git -C /opt/bbsc fetch --depth=1 --filter=blob:none origin refs/tags/v0.0.2 \
+    && git -C /opt/bbsc checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/bbsc rev-parse HEAD)" = "4f11faf88b6ba658ebde6fe5fbefdadedba4fa41"
+
+COPY lab_server.py /app/lab_server.py
+COPY lab_region_info.py /opt/bbsc/server/gameserver/lab_region_info.py
+
+ENTRYPOINT ["python", "/app/lab_server.py"]

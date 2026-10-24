@@ -41,6 +41,10 @@ bool ar_is_read_only{true};
 
 namespace Storage {
 
+// A corrupt cache file is untrusted input. Do not allocate unbounded memory or pass a
+// partial record to the deserializer (which used to turn it into exit code 23).
+static constexpr u64 MaxCacheBlobBytes = 64ull * 1024 * 1024;
+
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
@@ -208,12 +212,30 @@ void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
         }
         mz_zip_archive_file_stat stat{};
         mz_zip_reader_file_stat(&zip_ar, index, &stat);
+        if (stat.m_uncomp_size > MaxCacheBlobBytes || stat.m_uncomp_size % sizeof(T) != 0) {
+            LOG_WARNING(Render, "Ignoring invalid shader cache blob {}", path.string());
+            return;
+        }
         v.resize(stat.m_uncomp_size / sizeof(T));
-        mz_zip_reader_extract_to_mem(&zip_ar, index, v.data(), stat.m_uncomp_size, 0);
+        if (!mz_zip_reader_extract_to_mem(&zip_ar, index, v.data(), stat.m_uncomp_size, 0)) {
+            v.clear();
+            LOG_WARNING(Render, "Ignoring unreadable shader cache blob {}", path.string());
+        }
     } else {
         const auto file = IOFile{path, FileAccessMode::Read};
-        v.resize(file.GetSize() / sizeof(T));
-        file.Read(v);
+        if (!file.IsOpen()) {
+            return;
+        }
+        const u64 bytes = file.GetSize();
+        if (bytes > MaxCacheBlobBytes || bytes % sizeof(T) != 0) {
+            LOG_WARNING(Render, "Ignoring invalid shader cache blob {}", path.string());
+            return;
+        }
+        v.resize(bytes / sizeof(T));
+        if (file.Read(v) != v.size()) {
+            v.clear();
+            LOG_WARNING(Render, "Ignoring truncated shader cache blob {}", path.string());
+        }
     }
 }
 
@@ -268,9 +290,16 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
             if (std::string{file_name.data()}.ends_with(ext)) {
                 mz_zip_archive_file_stat stat{};
                 mz_zip_reader_file_stat(&zip_ar, index, &stat);
+                if (stat.m_uncomp_size > MaxCacheBlobBytes) {
+                    LOG_WARNING(Render, "Ignoring oversized shader cache entry {}", file_name.data());
+                    continue;
+                }
                 std::vector<u8> data(stat.m_uncomp_size);
-                mz_zip_reader_extract_to_mem(&zip_ar, index, data.data(), data.size(), 0);
-                func(std::move(data));
+                if (mz_zip_reader_extract_to_mem(&zip_ar, index, data.data(), data.size(), 0)) {
+                    func(std::move(data));
+                } else {
+                    LOG_WARNING(Render, "Ignoring unreadable shader cache entry {}", file_name.data());
+                }
             }
         }
     } else {
@@ -279,9 +308,19 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
                 using namespace Common::FS;
                 const auto& file = IOFile{file_name, FileAccessMode::Read};
                 if (file.IsOpen()) {
-                    std::vector<u8> data(file.GetSize());
-                    file.Read(data);
-                    func(std::move(data));
+                    const u64 bytes = file.GetSize();
+                    if (bytes > MaxCacheBlobBytes) {
+                        LOG_WARNING(Render, "Ignoring oversized shader cache entry {}",
+                                    file_name.path().string());
+                        continue;
+                    }
+                    std::vector<u8> data(bytes);
+                    if (file.Read(data) == data.size()) {
+                        func(std::move(data));
+                    } else {
+                        LOG_WARNING(Render, "Ignoring truncated shader cache entry {}",
+                                    file_name.path().string());
+                    }
                 }
             }
         }

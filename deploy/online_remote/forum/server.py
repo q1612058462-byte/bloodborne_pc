@@ -10,6 +10,7 @@ import hmac
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+import zipfile
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ import sqlite3
 import sys
 import threading
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 import warnings
 
 from PIL import Image, ImageOps
@@ -27,11 +28,15 @@ from PIL import Image, ImageOps
 
 DATA = Path(os.environ.get("FORUM_DATA", "/var/lib/forum"))
 ORIGIN = os.environ.get("FORUM_ORIGIN", "https://82.157.168.20")
-MAX_BODY = 10 * 1024 * 1024
+MAX_BODY = 32 * 1024 * 1024
 MAX_IMAGE = 3 * 1024 * 1024
 MAX_IMAGE_PIXELS = 12_000_000
-MAX_IMAGES = 2
+MAX_IMAGES = 6
 MAX_USER_IMAGE_BYTES = 50 * 1024 * 1024
+MAX_FILES = 3
+MAX_FILE = 4 * 1024 * 1024
+MAX_USER_FILE_BYTES = 100 * 1024 * 1024
+FILE_TYPES = {".log": "text/plain", ".txt": "text/plain", ".jsonl": "application/jsonl", ".zip": "application/zip"}
 SESSION_SECONDS = 30 * 86400
 CATEGORIES = {"求助", "联机", "建议", "闲聊"}
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
@@ -54,7 +59,7 @@ def clean_text(value, minimum, maximum, label):
 
 def prepare_images(items):
     if not isinstance(items, list) or len(items) > MAX_IMAGES:
-        raise ApiError(400, "每条最多上传两张图片")
+        raise ApiError(400, "每条最多上传六张图片")
     output = []
     for item in items:
         if not isinstance(item, dict) or item.get("mime") not in ("image/png", "image/jpeg", "image/webp"):
@@ -88,6 +93,52 @@ def prepare_images(items):
         except (ValueError, OSError, Image.DecompressionBombError) as exc:
             raise ApiError(400, "图片无法读取、尺寸过大或格式不支持") from exc
     return output
+
+
+def prepare_files(items, limit=MAX_FILES):
+    if not isinstance(items, list) or len(items) > limit:
+        raise ApiError(400, f"每条最多上传 {limit} 个附件")
+    output = []
+    for item in items:
+        name = item.get("name") if isinstance(item, dict) else None
+        encoded = item.get("data") if isinstance(item, dict) else None
+        if not isinstance(name, str) or not re.fullmatch(r"[\w.()\- \u4e00-\u9fff]{1,100}", name) or "." not in name:
+            raise ApiError(400, "附件名称无效")
+        suffix = Path(name).suffix.lower()
+        if suffix not in FILE_TYPES or not isinstance(encoded, str) or len(encoded) > MAX_FILE * 4 // 3 + 8:
+            raise ApiError(400, "附件仅支持 LOG、TXT、JSONL、ZIP，单个不超过 4 MB")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+            if not raw or len(raw) > MAX_FILE:
+                raise ValueError("file size")
+            if suffix == ".zip":
+                with zipfile.ZipFile(BytesIO(raw)) as archive:
+                    entries = archive.infolist()
+                    if not entries or len(entries) > 20 or sum(x.file_size for x in entries) > 16 * 1024 * 1024:
+                        raise ValueError("zip size")
+                    for entry in entries:
+                        if entry.is_dir() or entry.flag_bits & 1 or "\\" in entry.filename or entry.filename.startswith("/") or ".." in Path(entry.filename).parts or Path(entry.filename).suffix.lower() not in (".log", ".txt", ".jsonl"):
+                            raise ValueError("zip contents")
+            elif b"\x00" in raw:
+                raise ValueError("binary attachment")
+            output.append((name, FILE_TYPES[suffix], raw))
+        except (ValueError, OSError, zipfile.BadZipFile) as exc:
+            raise ApiError(400, "附件损坏、过大或包含不支持的文件") from exc
+    return output
+
+
+def redact_log(value):
+    if not isinstance(value, str):
+        raise ApiError(400, "日志片段格式不正确")
+    lines = value.splitlines()[-100:]
+    result = []
+    for line in lines:
+        line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line)[:400]
+        line = re.sub(r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|cookie|qq|npid)\s*[:=]\s*[^\s,;]+", r"\1=[已隐藏]", line)
+        line = re.sub(r"(?i)C:\\Users\\[^\\\s]+", r"C:\\Users\\[用户]", line)
+        line = re.sub(r"(?i)[\w.+-]+@[\w.-]+\.[a-z]{2,}", "[邮箱已隐藏]", line)
+        result.append(line)
+    return "\n".join(result)[-20000:]
 
 
 class RateLimiter:
@@ -146,7 +197,21 @@ class Forum:
                 id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id INTEGER NOT NULL,
                 data BLOB NOT NULL, created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS files (
+                id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id INTEGER NOT NULL,
+                name TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL,
+                admin_only INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS reports (
+                thread_id INTEGER PRIMARY KEY REFERENCES threads(id),
+                qq TEXT NOT NULL
+            );
         """)
+        # A non-login author for user-consented crash submissions. Its random
+        # credentials are never returned or written to logs.
+        self.db.execute("INSERT OR IGNORE INTO users(id,nickname,nickname_key,salt,password_hash,approved_count,created_at) "
+                        "VALUES(0,'启动器反馈','__launcher_reports__',?,?,1,?)",
+                        (secrets.token_bytes(16), secrets.token_bytes(32), int(time.time())))
         self.db.commit()
         self.lock = threading.RLock()
         self.limiter = RateLimiter()
@@ -207,9 +272,10 @@ class Forum:
                 self.db.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(token.encode()).hexdigest(),))
                 self.db.commit()
 
-    def make_post(self, kind, user_id, body, images, category=None, title=None, thread_id=None):
+    def make_post(self, kind, user_id, body, images, category=None, title=None, thread_id=None, files=None):
         body = clean_text(body, 2 if kind == "reply" else 10, 5000, "正文")
         image_data = prepare_images(images)
+        file_data = prepare_files(files or [])
         if kind == "thread":
             title = clean_text(title, 5, 100, "标题")
             if category not in CATEGORIES:
@@ -225,6 +291,12 @@ class Forum:
                                    "WHERE t.user_id=? OR r.user_id=?", (user_id, user_id)).fetchone()[0]
             if used + sum(len(data) for data in image_data) > MAX_USER_IMAGE_BYTES:
                 raise ApiError(413, "图片存储额度已满，请联系管理员")
+            used_files = self.db.execute("SELECT COALESCE(SUM(LENGTH(f.data)),0) FROM files f "
+                                         "LEFT JOIN threads t ON f.owner_kind='thread' AND f.owner_id=t.id "
+                                         "LEFT JOIN replies r ON f.owner_kind='reply' AND f.owner_id=r.id "
+                                         "WHERE t.user_id=? OR r.user_id=?", (user_id, user_id)).fetchone()[0]
+            if used_files + sum(len(data) for _, _, data in file_data) > MAX_USER_FILE_BYTES:
+                raise ApiError(413, "附件存储额度已满，请联系管理员")
             status = "visible" if user["approved_count"] else "pending"
             if kind == "reply":
                 parent = self.db.execute("SELECT status FROM threads WHERE id=?", (thread_id,)).fetchone()
@@ -241,11 +313,50 @@ class Forum:
                 for data in image_data:
                     self.db.execute("INSERT INTO images VALUES(?,?,?,?,?)",
                                     (secrets.token_hex(16), kind, post_id, data, now))
+                for name, mime, data in file_data:
+                    self.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,?)",
+                                    (secrets.token_hex(16), kind, post_id, name, mime, data, 0, now))
         return {"id": post_id, "status": status}
+
+    def make_report(self, body):
+        qq = body.get("qq")
+        if not isinstance(qq, str) or not re.fullmatch(r"[1-9][0-9]{4,11}", qq):
+            raise ApiError(400, "请填写有效的 QQ 号")
+        version = clean_text(body.get("version", "未知"), 1, 32, "版本")
+        if not re.fullmatch(r"[\w.\-]{1,32}", version):
+            raise ApiError(400, "版本格式不正确")
+        code = body.get("exit_code")
+        if type(code) is not int or abs(code) > 4294967295:
+            raise ApiError(400, "退出代码不正确")
+        summary = clean_text(body.get("summary"), 3, 500, "报错摘要")
+        public_tail = redact_log(body.get("tail"))
+        raw_files = prepare_files(body.get("files", []), limit=1)
+        if len(raw_files) != 1 or not raw_files[0][0].lower().endswith((".log", ".zip")):
+            raise ApiError(400, "请附上本次运行的 LOG 或 ZIP 日志")
+        safe_summary = redact_log(summary).replace("\n", " ")[:300]
+        text = f"启动器版本：{version}\n退出代码：{code}\n报错摘要：{safe_summary}\n\n运行日志末尾 100 行（已脱敏）：\n{public_tail or '无'}"
+        text = text.replace(qq, "[QQ已隐藏]")
+        title = f"[启动器报错] {version} · 退出代码 {code}"
+        now = int(time.time())
+        with self.lock, self.db:
+            cur = self.db.execute("INSERT INTO threads(user_id,category,title,body,status,created_at) "
+                                  "VALUES(0,'求助',?,?,'visible',?)", (title, text, now))
+            post_id = cur.lastrowid
+            self.db.execute("INSERT INTO reports VALUES(?,?)", (post_id, qq))
+            name, mime, data = raw_files[0]
+            self.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,?)",
+                            (secrets.token_hex(16), "thread", post_id, name, mime, data, 1, now))
+        return {"id": post_id, "status": "visible"}
 
     def _image_ids(self, kind, post_id):
         return [row[0] for row in self.db.execute("SELECT id FROM images WHERE owner_kind=? AND owner_id=?",
                                                   (kind, post_id)).fetchall()]
+
+    def _file_list(self, kind, post_id, viewer=None):
+        admin = bool(viewer and viewer["is_admin"])
+        return [dict(row) for row in self.db.execute(
+            "SELECT id,name,admin_only FROM files WHERE owner_kind=? AND owner_id=? AND (admin_only=0 OR ?)",
+            (kind, post_id, admin)).fetchall()]
 
     def list_threads(self, category=None, query="", mine=None):
         if category and category not in CATEGORIES:
@@ -275,6 +386,11 @@ class Forum:
                 raise ApiError(404, "讨论不存在或尚未公开")
             result = dict(row)
             result["images"] = self._image_ids("thread", thread_id)
+            result["files"] = self._file_list("thread", thread_id, viewer)
+            if viewer and viewer["is_admin"]:
+                report = self.db.execute("SELECT qq FROM reports WHERE thread_id=?", (thread_id,)).fetchone()
+                if report:
+                    result["report_qq"] = report["qq"]
             replies = self.db.execute("SELECT r.*,u.nickname FROM replies r JOIN users u ON u.id=r.user_id "
                                       "WHERE r.thread_id=? ORDER BY r.created_at,r.id", (thread_id,)).fetchall()
             result["replies"] = []
@@ -282,6 +398,7 @@ class Forum:
                 if reply["status"] == "visible" or viewer and (viewer["is_admin"] or viewer["id"] == reply["user_id"]):
                     item = dict(reply)
                     item["images"] = self._image_ids("reply", reply["id"])
+                    item["files"] = self._file_list("reply", reply["id"], viewer)
                     result["replies"].append(item)
             return result
 
@@ -303,6 +420,24 @@ class Forum:
                     raise ApiError(404, "图片不存在")
             return row["data"]
 
+    def file(self, file_id, viewer=None):
+        with self.lock:
+            row = self.db.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+            if not row or row["admin_only"] and not (viewer and viewer["is_admin"]):
+                raise ApiError(404, "附件不存在")
+            table = "threads" if row["owner_kind"] == "thread" else "replies"
+            owner = self.db.execute(f"SELECT status,user_id FROM {table} WHERE id=?", (row["owner_id"],)).fetchone()
+            if not owner or owner["status"] != "visible" and not (viewer and
+                    (viewer["is_admin"] or viewer["id"] == owner["user_id"])):
+                raise ApiError(404, "附件不存在")
+            if row["owner_kind"] == "reply":
+                parent = self.db.execute("SELECT t.status,t.user_id FROM threads t JOIN replies r "
+                                         "ON r.thread_id=t.id WHERE r.id=?", (row["owner_id"],)).fetchone()
+                if not parent or parent["status"] != "visible" and not (viewer and
+                        (viewer["is_admin"] or viewer["id"] == parent["user_id"])):
+                    raise ApiError(404, "附件不存在")
+            return row
+
     def pending(self, admin):
         if not admin or not admin["is_admin"]:
             raise ApiError(403, "需要管理员权限")
@@ -315,8 +450,10 @@ class Forum:
                 "JOIN users u ON u.id=r.user_id WHERE r.status='pending' ORDER BY r.created_at LIMIT 100")]
             for item in threads:
                 item["images"] = self._image_ids("thread", item["id"])
+                item["files"] = self._file_list("thread", item["id"], admin)
             for item in replies:
                 item["images"] = self._image_ids("reply", item["id"])
+                item["files"] = self._file_list("reply", item["id"], admin)
             return {"threads": threads, "replies": replies}
 
     def moderate(self, admin, kind, post_id, decision):
@@ -437,6 +574,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 return self.wfile.write(data)
+            match = re.fullmatch(r"/files/([a-f0-9]{32})", path)
+            if match:
+                item = self.forum.file(match[1], viewer)
+                data = item["data"]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(item["name"]))
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
             raise ApiError(404, "页面不存在")
         except ApiError as exc:
             self.send_json(exc.status, {"error": str(exc)})
@@ -445,11 +594,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.headers.get("Origin") != self.origin:
-                raise ApiError(403, "来源不正确")
             path = urlsplit(self.path).path
+            if path != "/reports" and self.headers.get("Origin") != self.origin:
+                raise ApiError(403, "来源不正确")
+            if path == "/reports" and self.headers.get("Origin") not in (None, "", self.origin):
+                raise ApiError(403, "来源不正确")
             body = self.read_json()
             ip = self.client_ip()
+            if path == "/reports":
+                self.forum.limiter.check("report-hour", ip, 2, 3600)
+                self.forum.limiter.check("report-day", ip, 6, 86400)
+                self.forum.limiter.check("report-global", "all", 30, 3600)
+                return self.send_json(201, self.forum.make_report(body))
             if path == "/register":
                 self.forum.limiter.check("register", ip, 3, 86400)
                 user_id = self.forum.register(body.get("nickname"), body.get("password"))
@@ -473,13 +629,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.forum.limiter.check("thread", str(user["id"]), 4, 3600)
                 return self.send_json(201, self.forum.make_post(
                     "thread", user["id"], body.get("body"), body.get("images", []),
-                    category=body.get("category"), title=body.get("title")))
+                    category=body.get("category"), title=body.get("title"), files=body.get("files", [])))
             match = re.fullmatch(r"/threads/([0-9]{1,9})/replies", path)
             if match:
                 self.forum.limiter.check("reply", str(user["id"]), 20, 3600)
                 return self.send_json(201, self.forum.make_post(
                     "reply", user["id"], body.get("body"), body.get("images", []),
-                    thread_id=int(match[1])))
+                    thread_id=int(match[1]), files=body.get("files", [])))
             if path == "/admin/moderate":
                 kind = body.get("kind")
                 post_id = body.get("id")

@@ -3,13 +3,20 @@
 
 #pragma once
 
-#include "common/assert.h"
 #include "common/types.h"
 
+#include <concepts>
 #include <cstddef>
+#include <cstring>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace Serialization {
+
+struct CorruptArchive : std::runtime_error {
+    CorruptArchive() : std::runtime_error("Invalid or corrupted shader cache entry") {}
+};
 
 template <typename T>
 concept Container = requires(T t) {
@@ -37,13 +44,18 @@ struct Archive {
         return container.size();
     }
 
+    [[nodiscard]] size_t RemainingBytes() const {
+        return container.size() - offset;
+    }
+
     u8* CurrPtr() {
         return container.data() + offset;
     }
 
     void Advance(size_t size) {
-        ASSERT_MSG(offset + size <= container.size(),
-                   "Invalid or corrupted deserialization container/shader cache");
+        if (size > RemainingBytes()) {
+            throw CorruptArchive{};
+        }
         offset += size;
     }
 
@@ -105,8 +117,9 @@ struct Writer {
 struct Reader {
     template <typename T>
     void Read(T* ptr, size_t size) {
-        ASSERT_MSG(ar.offset + size <= ar.container.size(),
-                   "Invalid or corrupted deserialization container/shader cache");
+        if (size > ar.RemainingBytes()) {
+            throw CorruptArchive{};
+        }
         std::memcpy(reinterpret_cast<void*>(ptr), ar.CurrPtr(), size);
         ar.Advance(size);
     }
@@ -121,7 +134,10 @@ struct Reader {
     void Read(auto& v) {
         size_t num_elements{};
         Read(num_elements);
-        for (int i = 0; i < num_elements; ++i) {
+        if (num_elements > ar.RemainingBytes()) {
+            throw CorruptArchive{};
+        }
+        for (size_t i = 0; i < num_elements; ++i) {
             v.emplace_back();
             Read(v.back());
         }
@@ -130,6 +146,9 @@ struct Reader {
     void Read(std::string& s) {
         size_t length{};
         Read(length);
+        if (length > ar.RemainingBytes()) {
+            throw CorruptArchive{};
+        }
         s.resize(length);
         Read(s.data(), length);
     }

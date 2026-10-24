@@ -9,6 +9,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -50,6 +51,54 @@ sealed class Choice {
     public readonly string Value;
     public Choice(string text, string value) { Text = text; Value = value; }
     public override string ToString() { return Text; }
+}
+
+static class XboxModArchive {
+    public static void Import(string zipPath, string modsRoot, string modName) {
+        if (new FileInfo(zipPath).Length > 128L * 1024 * 1024)
+            throw new InvalidDataException("Mod ZIP 超过 128 MB，请确认下载的是正确文件。");
+        Directory.CreateDirectory(modsRoot);
+        string destination = Path.Combine(modsRoot, modName);
+        if (Directory.Exists(destination) || File.Exists(destination))
+            throw new IOException("Xbox 按钮 Mod 已存在；请先在 Mod 目录中检查旧版本，不会自动覆盖。");
+        string staging = Path.Combine(modsRoot, ".xbox-import-" + Guid.NewGuid().ToString("N"));
+        try {
+            Directory.CreateDirectory(Path.Combine(staging, "dvdroot_ps4", "menu"));
+            string target = Path.Combine(staging, "dvdroot_ps4", "menu", "common.tpf.dcx");
+            if (Path.GetFileName(zipPath).Equals("common.tpf.dcx", StringComparison.OrdinalIgnoreCase)) {
+                File.Copy(zipPath, target);
+            } else using (ZipArchive zip = ZipFile.OpenRead(zipPath)) {
+                List<ZipArchiveEntry> matches = new List<ZipArchiveEntry>();
+                foreach (ZipArchiveEntry entry in zip.Entries) {
+                    string name = entry.FullName.Replace('\\', '/');
+                    if (!name.EndsWith("common.tpf.dcx", StringComparison.OrdinalIgnoreCase)) continue;
+                    string[] parts = name.Split('/');
+                    if (parts.Length < 2 || !parts[parts.Length - 2].Equals("menu", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (parts.Any(part => part == "." || part == ".." || part.Length == 0)) continue;
+                    if (entry.Length <= 0 || entry.Length > 64L * 1024 * 1024) continue;
+                    matches.Add(entry);
+                }
+                if (matches.Count != 1)
+                    throw new InvalidDataException("ZIP 中必须恰有一个 menu/common.tpf.dcx；请选择 Nexus 的单一 Xbox 版本 ZIP。");
+                using (Stream input = matches[0].Open())
+                using (Stream output = new FileStream(target, FileMode.CreateNew, FileAccess.Write)) {
+                    byte[] buffer = new byte[65536];
+                    long copied = 0;
+                    int count;
+                    while ((count = input.Read(buffer, 0, buffer.Length)) != 0) {
+                        copied += count;
+                        if (copied > 64L * 1024 * 1024) throw new InvalidDataException("Mod 文件解压后过大。");
+                        output.Write(buffer, 0, count);
+                    }
+                    if (copied != matches[0].Length) throw new InvalidDataException("Mod ZIP 内容长度不符。");
+                }
+            }
+            Directory.Move(staging, destination);
+        } finally {
+            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+        }
+    }
 }
 
 sealed class LaunchOptions {
@@ -577,6 +626,8 @@ sealed class MainForm : Form {
     static readonly string PackageVersion = PayloadText("APP_VERSION.txt").Trim();
     static readonly string ReleaseNotes = PayloadText("RELEASE_NOTES_zh-CN.txt").Trim();
     static readonly bool BundledBbsc = PayloadText("runtime/bbsc/SOURCE_AND_LICENSE.txt").Length != 0;
+    static readonly string XboxModUrl = OnlinePackageSetting("xbox_mod_url");
+    static readonly string XboxModSha256 = OnlinePackageSetting("xbox_mod_sha256");
 
     static readonly Choice[] Resolutions = {
         new Choice("1280 × 720", "1280x720"), new Choice("1920 × 1080", "1920x1080"),
@@ -609,10 +660,6 @@ sealed class MainForm : Form {
     static readonly Choice[] ModelDetail = {
         new Choice("最高（-2）", "-2"), new Choice("游戏默认", "0"),
         new Choice("较低（1）", "1"), new Choice("最低（2）", "2") };
-    static readonly Choice[] Languages = {
-        new Choice("英语", "1"), new Choice("法语", "2"), new Choice("西班牙语", "3"),
-        new Choice("德语", "4"), new Choice("意大利语", "5"), new Choice("俄语", "8"),
-        new Choice("日语", "0") };
     static readonly Choice[] PresentModes = {
         new Choice("Mailbox（默认）", ""), new Choice("FIFO（垂直同步）", "Fifo"),
         new Choice("FIFO Relaxed", "FifoRelaxed"), new Choice("Immediate（允许撕裂）", "Immediate") };
@@ -704,25 +751,34 @@ sealed class MainForm : Form {
     TextBox rootBox, gameBox, logBox;
     Label gameStatus, statusLabel;
     ComboBox coreMode;
-    ComboBox resolution, frameRate, upscaler, preset, live, modelLod, language, presentMode;
+    ComboBox resolution, frameRate, upscaler, preset, live, modelLod, presentMode;
     ComboBox qualityProfile;
-    CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink, oldHunters;
+    CheckBox fullscreen, showFps, sharpen, desktopLink, startMenuLink, hdrOutput;
+    NumericUpDown hdrPeakNits, hdrPaperWhiteNits;
     CheckBox shaderFrameStats, shaderGpuProfile;
     Label shaderCacheStatus;
     Button shaderExportButton, shaderImportButton;
-    CheckBox mouseEnabled, mouseInvert;
-    NumericUpDown mouseSensitivity;
+    CheckBox mouseEnabled, mouseInvert, mouseDirect;
+    NumericUpDown mouseSensitivity, mouseDirectSensitivity;
     ComboBox mouseLeft, mouseRight, mouseMiddle, mouseX1, mouseX2, mouseWheelUp, mouseWheelDown;
     readonly Dictionary<string, ComboBox> keyBindings = new Dictionary<string, ComboBox>();
+    readonly ComboBox[] chordActions = new ComboBox[2];
+    NumericUpDown walkStrength;
     readonly Dictionary<string, ComboBox> gamepadBindings = new Dictionary<string, ComboBox>();
     readonly List<KeyValuePair<string, CheckBox>> effects = new List<KeyValuePair<string, CheckBox>>();
     readonly Dictionary<string, CheckBox> cheats = new Dictionary<string, CheckBox>();
     TextBox saveRootBox;
     CheckBox autoBackup;
+    CheckBox modsEnabled;
+    ListView modsList;
+    Label modsStatus;
+    Button modsImportButton, modsDownloadButton, modsRefreshButton, modsUpButton, modsDownButton;
+    bool refreshingMods;
+    const string XboxModName = "Xbox 按钮 (Dommo)";
+    const string XboxModPage = "https://www.nexusmods.com/bloodborne/mods/30?tab=files";
     TextBox lanAddressBox, lanNpidBox, lanPasswordBox, lanEmailBox, lanSecretBox;
     TextBox onlineNpidBox, onlinePasswordBox, onlineQqBox, onlineNicknameBox;
     TextBox seamlessNpidBox, seamlessPasswordBox, seamlessQqBox, seamlessNicknameBox;
-    CheckBox onlineShowInList;
     Label onlineServiceStatus, onlineCountStatus, seamlessServiceStatus, seamlessCountStatus,
         onlineLoginStatus, onlineApplicationStatus, onlineSetupStatus,
         onlineTailscaleStatus, onlineHeadscaleStatus;
@@ -879,6 +935,7 @@ sealed class MainForm : Form {
         TabPage onlinePage = new TabPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage seamlessPage = new TabPage("在线无缝联机") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
+        TabPage modsPage = new TabPage("Mod 管理") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
         TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
@@ -890,6 +947,7 @@ sealed class MainForm : Form {
         tabs.TabPages.Add(lanPage);
         tabs.TabPages.Add(onlinePage);
         tabs.TabPages.Add(inputPage);
+        tabs.TabPages.Add(modsPage);
         tabs.TabPages.Add(savePage);
         tabs.TabPages.Add(cheatPage);
         tabs.TabPages.Add(versionPage);
@@ -907,6 +965,7 @@ sealed class MainForm : Form {
                 RefreshTailscaleStatus();
             }
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
+            if (tabs.SelectedTab == modsPage) RefreshMods();
         };
         if (background != null) {
             foreach (TabPage page in tabs.TabPages) {
@@ -961,9 +1020,23 @@ sealed class MainForm : Form {
         AddSpan(display, Flow(fullscreen, showFps));
         column.Controls.Add(display.Parent);
 
+        TableLayoutPanel hdrGroup = Group("HDR10 输出（实验）", 2);
+        hdrOutput = Check("启用 HDR10 输出（需先在 Windows 打开 HDR）");
+        AddSpan(hdrGroup, hdrOutput);
+        hdrPeakNits = new NumericUpDown { Minimum = 400, Maximum = 4000, Increment = 100,
+            Value = 1000, Width = S(100) };
+        AddRow(hdrGroup, "显示器峰值亮度（nit）", hdrPeakNits, null);
+        hdrPaperWhiteNits = new NumericUpDown { Minimum = 80, Maximum = 500, Increment = 10,
+            Value = 200, Width = S(100) };
+        AddRow(hdrGroup, "普通画面亮度（nit）", hdrPaperWhiteNits, null);
+        AddSpan(hdrGroup, Note("将游戏 SDR 画面转换为 HDR10，并适度扩展亮部；并非游戏原生 HDR。显示器或 Windows 未开启 HDR 时自动回退 SDR。默认关闭，画面异常请关闭。"));
+        column.Controls.Add(hdrGroup.Parent);
+
         TableLayoutPanel image = Group("画质", 2);
         upscaler = Combo(image, "升频方式", Upscalers);
-        upscaler.SelectedIndexChanged += delegate { preset.Enabled = UpscalerUsesPreset(Value(upscaler)); };
+        upscaler.SelectedIndexChanged += delegate {
+            if (preset != null) preset.Enabled = UpscalerUsesPreset(Value(upscaler));
+        };
         preset = Combo(image, "质量预设", Presets);
         live = Combo(image, "实时切换分辨率", LiveModes);
         modelLod = Combo(image, "模型细节", ModelDetail);
@@ -986,18 +1059,11 @@ sealed class MainForm : Form {
         AddSpan(effectGroup, effectGrid);
         column.Controls.Add(effectGroup.Parent);
 
-        TableLayoutPanel content = Group("游戏内容", 2);
-        oldHunters = Check("启用《老猎人》DLC 授权（需要自己的 DLC／年度版游戏）");
-        AddSpan(content, oldHunters);
-        AddSpan(content, Note("CUSA03173 1.09 的 DLC 数据已包含在更新中；该选项只创建游戏识别授权所需的兼容目录，不下载或提供任何游戏文件。"));
-        column.Controls.Add(content.Parent);
-
-        TableLayoutPanel extras = Group("语言与快捷方式", 2);
-        language = Combo(extras, "游戏语言", Languages);
+        TableLayoutPanel extras = Group("快捷方式", 2);
         desktopLink = Check("创建桌面快捷方式");
         startMenuLink = Check("创建开始菜单快捷方式");
         AddSpan(extras, Flow(desktopLink, startMenuLink));
-        AddSpan(extras, Note("启动器界面为中文；当前上游游戏内设置菜单只提供英语和俄语。"));
+        AddSpan(extras, Note("游戏语言请进入游戏后，在“设置 → 语言”中选择；启动器不再覆盖语言。"));
         column.Controls.Add(extras.Parent);
 
         TableLayoutPanel shaderColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
@@ -1115,7 +1181,7 @@ sealed class MainForm : Form {
         onlineUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(130),
             Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
         onlineUsersList.Columns.Add("联机 ID", S(150));
-        onlineUsersList.Columns.Add("公开昵称", S(170));
+        onlineUsersList.Columns.Add("昵称", S(170));
         onlineUsersList.Columns.Add("当前游戏", S(300));
         AddSpan(onlineOverview, onlineUsersList);
         TableLayoutPanel onlineAccount = Group("我的在线账号", 2);
@@ -1127,8 +1193,7 @@ sealed class MainForm : Form {
         AddRow(onlineAccount, "账号密码", onlinePasswordBox, null);
         AddRow(onlineAccount, "QQ 号（申请时填写）", onlineQqBox, null);
         AddRow(onlineAccount, "昵称（申请时填写）", onlineNicknameBox, null);
-        onlineShowInList = Check("同意在在线玩家列表中展示我的联机 ID、昵称和当前游戏");
-        AddSpan(onlineAccount, onlineShowInList);
+        AddSpan(onlineAccount, Note("使用公共联机服务时，联机 ID、昵称、联机模式和当前游戏会显示在在线玩家列表；QQ 号、私网 IP 和密码不会公开。"));
         TableLayoutPanel onlineManual = Group("手动操作（仅一键失败时使用）", 2);
         onlineQuickButton = new Button { Text = "一键准备并启动在线游戏", AutoSize = true,
             Enabled = OverlayServerIp().Length != 0 };
@@ -1143,6 +1208,7 @@ sealed class MainForm : Form {
             ? "准备状态：此包未配置远端在线服务。"
             : "准备状态：填写账号资料后即可一键启动。");
         AddSpan(onlineAccount, onlineSetupStatus);
+        AddSpan(onlineAccount, Note("使用 Mod 可能干扰联机；匹配或掉线异常时，请先到“Mod 管理”关闭所有 Mod 再测试。"));
         onlineColumn.Controls.Add(onlineAccount.Parent);
         AddSpan(onlineManual, Note("正常情况只需使用上方一键启动。仅当申请、私网或服务检测失败时，按以下步骤逐项排查。"));
         AddSpan(onlineManual, Note("使用条件：先安装运行环境；每台电脑使用不同联机 ID。首次注册需 QQ 号和昵称；已有账号使用原 ID 与密码。"));
@@ -1164,6 +1230,7 @@ sealed class MainForm : Form {
         AddRow(seamlessAccount, "账号密码", seamlessPasswordBox, null);
         AddRow(seamlessAccount, "QQ 号（首次申请）", seamlessQqBox, null);
         AddRow(seamlessAccount, "昵称（首次申请）", seamlessNicknameBox, null);
+        AddSpan(seamlessAccount, Note("在线时联机 ID、昵称、联机模式和当前游戏会显示在公共列表；QQ 号、私网 IP 和密码不会公开。"));
         BindOnlineAccountBoxes();
         TableLayoutPanel seamlessManual = Group("手动操作（仅一键失败时使用）", 2);
         seamlessQuickButton = new Button { Text = "一键检测并启动无缝联机", AutoSize = true,
@@ -1180,6 +1247,7 @@ sealed class MainForm : Form {
         AddSpan(seamlessAccount, seamlessNetworkStatus);
         AddSpan(seamlessAccount, seamlessSetupStatus);
         AddSpan(seamlessAccount, Note("实验性模式：使用现有存档，启动前后自动备份。"));
+        AddSpan(seamlessAccount, Note("使用 Mod 可能干扰无缝联机；异常时，请先到“Mod 管理”关闭所有 Mod 再测试。"));
         seamlessColumn.Controls.Add(seamlessAccount.Parent);
         AddSpan(seamlessManual, Note("正常情况只需使用上方一键启动。仅当申请、私网或服务检测失败时，按以下步骤逐项排查。"));
         AddSpan(seamlessManual, Note("使用条件：已安装含 BBSC 的运行环境；两端使用不同联机 ID。首次申请需 QQ 号和昵称，已有账号可跳过申请与注册。"));
@@ -1197,11 +1265,11 @@ sealed class MainForm : Form {
         seamlessRefreshButton = new Button { Text = "刷新服务状态", AutoSize = true };
         seamlessRefreshButton.Click += delegate { RefreshPublicStatus(); };
         AddSpan(seamlessOverview, Flow(seamlessRefreshButton));
-        AddSpan(seamlessOverview, Note("下方汇总传统与无缝联机的在线人数，只显示自愿公开的玩家；游戏名称含“无缝”表示无缝登录，并非当前可加入的房间。"));
+        AddSpan(seamlessOverview, Note("下方汇总传统与无缝联机的在线玩家；游戏名称含“无缝”表示无缝登录，并非当前可加入的房间。"));
         seamlessUsersList = new ListView { View = View.Details, FullRowSelect = true, Height = S(130),
             Width = S(690), HeaderStyle = ColumnHeaderStyle.Nonclickable };
         seamlessUsersList.Columns.Add("联机 ID", S(150));
-        seamlessUsersList.Columns.Add("公开昵称", S(170));
+        seamlessUsersList.Columns.Add("昵称", S(170));
         seamlessUsersList.Columns.Add("当前游戏", S(300));
         AddSpan(seamlessOverview, seamlessUsersList);
         seamlessColumn.Controls.Add(seamlessOverview.Parent);
@@ -1232,7 +1300,7 @@ sealed class MainForm : Form {
         AddSpan(onlineAdvanced, Link("玩家论坛：上传截图、提交问题与交流联机经验", "https://82.157.168.20/windows/forum/"));
         AddSpan(onlineAdvanced, Note("启动器只显示连接状态；真正的登录状态在启动游戏后依据核心认证结果更新。" +
             (PublicServiceIsLoopback() ? "本机 Docker 测试包不能供异地玩家直接联机。" : "")));
-        AddSpan(onlineAdvanced, Note("在线人数以服务端实际返回为准；公开列表只展示同意公开的在线玩家，QQ 号不会出现在列表中。"));
+        AddSpan(onlineAdvanced, Note("在线人数和列表按相同的联机 ID 去重；在线时会公开联机 ID、昵称、联机模式和当前游戏。QQ 号、私网 IP 和密码不会出现在列表中。"));
         TableLayoutPanel onlineGuide = Group("联机步骤", 2);
         AddSpan(onlineGuide, Note("1. 在“设置”页选择游戏本体并安装运行环境，两位玩家各用不同联机 ID。\r\n2. 优先在所选模式页使用一键启动；失败时展开该页的手动操作，按申请、查询、注册、连接私网的顺序排查。\r\n3. 两端私网均显示不同的 100.64.x.x 地址后，在当前模式页手动启动。\r\n4. 传统联机仍需相同游戏内密码及可召唤区域：房主摇大铃，另一人摇小铃。"));
         AddSpan(onlineGuide, Note("跨互联网测试需要每位玩家加入同一私网；Headscale 负责设备入网，shadNet 仍负责游戏账号与召唤。只连得上控制服务器而玩家之间不通，仍可能无法召唤。"));
@@ -1329,11 +1397,32 @@ sealed class MainForm : Form {
         inputColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         inputPage.Controls.Add(inputColumn);
 
+        TableLayoutPanel inputGuide = Group("键鼠快速调整", 2);
+        AddSpan(inputGuide, Note("原生鼠标视角下，锁定后鼠标不会再推动镜头或切换目标；方向键或实体右摇杆仍可切换目标。WASD 斜向奔跑已做等幅处理。"));
+        Button sprintRightShift = new Button { Text = "奔跑改为右 Shift", AutoSize = true };
+        sprintRightShift.Click += delegate {
+            SelectValue(keyBindings["CIRCLE"], "229");
+            statusLabel.Text = "已将奔跑／闪避改为右 Shift；保存设置并重启游戏后生效。";
+        };
+        Button sprintMouseSide = new Button { Text = "鼠标侧键 1 奔跑", AutoSize = true };
+        sprintMouseSide.Click += delegate {
+            SelectValue(mouseX1, "circle");
+            statusLabel.Text = "已将鼠标侧键 1 设为奔跑／闪避；保存设置并重启游戏后生效。";
+        };
+        AddSpan(inputGuide, Flow(sprintRightShift, sprintMouseSide));
+        AddSpan(inputGuide, Note("如果只有左 Shift+W+A 会断键，而右向正常，可能是键盘组合键冲突。可用上方任一备用映射；鼠标侧键方案不必同时按三个键。"));
+        inputColumn.Controls.Add(inputGuide.Parent);
+
         TableLayoutPanel movement = Group("移动与视角键", 2);
         AddKey(movement, "向前", "MOVE_UP", "26");
         AddKey(movement, "向后", "MOVE_DOWN", "22");
         AddKey(movement, "向左", "MOVE_LEFT", "4");
         AddKey(movement, "向右", "MOVE_RIGHT", "7");
+        AddKey(movement, "静步（按住）", "WALK", "224");
+        walkStrength = new NumericUpDown { DecimalPlaces = 2, Increment = 0.05M,
+            Minimum = 0.10M, Maximum = 0.90M, Value = 0.45M, Width = S(100) };
+        AddRow(movement, "静步移动幅度", walkStrength, null);
+        AddSpan(movement, Note("默认左 Ctrl 静步；只影响键盘移动，手柄不变。与奔跑同时按住时奔跑优先。"));
         AddKey(movement, "视角上", "LOOK_UP", "82");
         AddKey(movement, "视角下", "LOOK_DOWN", "81");
         AddKey(movement, "视角左", "LOOK_LEFT", "80");
@@ -1361,6 +1450,16 @@ sealed class MainForm : Form {
         AddSpan(actions, Note("Xbox 的 View／Select、DualShock／DualSense 的触摸板左侧会打开姿势菜单；支持陀螺仪的手柄也会传递动作传感器数据。"));
         inputColumn.Controls.Add(actions.Parent);
 
+        TableLayoutPanel chords = Group("键盘双键快捷键", 2);
+        for (int i = 0; i < chordActions.Length; ++i) {
+            string slot = (i + 1).ToString(CultureInfo.InvariantCulture);
+            AddKey(chords, "快捷键 " + slot + "：按住键", "CHORD" + slot + "_MOD", "0");
+            AddKey(chords, "快捷键 " + slot + "：主键", "CHORD" + slot + "_KEY", "0");
+            chordActions[i] = Combo(chords, "快捷键 " + slot + "：执行动作", MouseActions);
+        }
+        AddSpan(chords, Note("同时按下两个键才触发；主键原有的动作暂时让位，按住键自身的功能仍生效。建议使用未绑定动作的右 Ctrl 作按住键。这是按键映射，不会自动执行游戏连招。"));
+        inputColumn.Controls.Add(chords.Parent);
+
         TableLayoutPanel gamepad = Group("手柄映射", 2);
         foreach (string[] definition in GamepadDefinitions) AddGamepad(gamepad, definition);
         Button resetGamepad = new Button { Text = "恢复默认手柄映射", AutoSize = true };
@@ -1371,11 +1470,18 @@ sealed class MainForm : Form {
 
         TableLayoutPanel mouse = Group("鼠标", 2);
         mouseEnabled = Check("启用鼠标控制视角并在游戏窗口中锁定指针");
+        mouseDirect = Check("原生鼠标视角（直接驱动游戏镜头，实验性）");
         mouseInvert = Check("反转鼠标 Y 轴");
+        mouseEnabled.CheckedChanged += delegate { UpdateMouseModeUi(); };
+        mouseDirect.CheckedChanged += delegate { UpdateMouseModeUi(); };
         AddSpan(mouse, Flow(mouseEnabled, mouseInvert));
+        AddSpan(mouse, mouseDirect);
         mouseSensitivity = new NumericUpDown { DecimalPlaces = 1, Increment = 0.1M, Minimum = 0.1M,
             Maximum = 20M, Value = 3M, Width = S(100) };
-        AddRow(mouse, "鼠标灵敏度", mouseSensitivity, null);
+        AddRow(mouse, "兼容视角灵敏度", mouseSensitivity, null);
+        mouseDirectSensitivity = new NumericUpDown { DecimalPlaces = 1, Increment = 0.1M, Minimum = 0.1M,
+            Maximum = 10M, Value = 1M, Width = S(100) };
+        AddRow(mouse, "原生视角灵敏度", mouseDirectSensitivity, null);
         mouseLeft = Combo(mouse, "鼠标左键", MouseActions);
         mouseRight = Combo(mouse, "鼠标右键", MouseActions);
         mouseMiddle = Combo(mouse, "鼠标中键", MouseActions);
@@ -1383,8 +1489,46 @@ sealed class MainForm : Form {
         mouseX2 = Combo(mouse, "鼠标侧键 2", MouseActions);
         mouseWheelUp = Combo(mouse, "滚轮向上", MouseActions);
         mouseWheelDown = Combo(mouse, "滚轮向下", MouseActions);
-        AddSpan(mouse, Note("F10 可随时释放或重新锁定鼠标；打开游戏内设置菜单、文字输入或切出窗口时也会自动释放。键盘、鼠标和手柄可以同时使用。"));
+        AddSpan(mouse, Note("原生视角仅支持游戏 1.09；版本不符会安全回退。锁定目标时鼠标不再注入右摇杆，切换目标可用视角方向键或实体手柄。键盘动作目前仍经游戏手柄接口，尚非完全原生。F10 可释放鼠标。"));
         inputColumn.Controls.Add(mouse.Parent);
+
+        TableLayoutPanel modsColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        modsColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        modsPage.Controls.Add(modsColumn);
+        TableLayoutPanel modsGroup = Group("已安装的文件 Mod", 2);
+        modsEnabled = Check("启动时启用文件 Mod（关闭后不删除已安装文件）");
+        AddSpan(modsGroup, modsEnabled);
+        modsList = new ListView { View = View.Details, CheckBoxes = true, FullRowSelect = true,
+            MultiSelect = false, Height = S(210), Dock = DockStyle.Fill };
+        modsList.Columns.Add("Mod（勾选为启用）", S(320));
+        modsList.Columns.Add("状态", S(145));
+        modsList.ItemChecked += delegate(object sender, ItemCheckedEventArgs e) {
+            if (!refreshingMods) SaveModProfile();
+        };
+        AddSpan(modsGroup, modsList);
+        modsRefreshButton = new Button { Text = "刷新列表", AutoSize = true };
+        modsUpButton = new Button { Text = "上移", AutoSize = true };
+        modsDownButton = new Button { Text = "下移", AutoSize = true };
+        modsImportButton = new Button { Text = "导入 Xbox 按钮文件…", AutoSize = true };
+        modsDownloadButton = new Button { Text = XboxModUrl.Length == 0 ?
+            "服务器文件待发布" : "从服务器下载 Xbox 按钮", AutoSize = true };
+        Button modsFolderButton = new Button { Text = "打开 Mod 目录", AutoSize = true };
+        modsRefreshButton.Click += delegate { RefreshMods(); };
+        modsUpButton.Click += delegate { MoveMod(-1); };
+        modsDownButton.Click += delegate { MoveMod(1); };
+        modsImportButton.Click += delegate { ImportXboxMod(); };
+        modsDownloadButton.Click += delegate { DownloadXboxMod(); };
+        modsFolderButton.Click += delegate { OpenModsFolder(); };
+        AddSpan(modsGroup, Flow(modsRefreshButton, modsUpButton, modsDownButton));
+        AddSpan(modsGroup, Flow(modsImportButton, modsDownloadButton, modsFolderButton));
+        AddSpan(modsGroup, Link("Xbox 按钮 Mod 官方页面（作者 Dommo；可选择现代 Xbox 或 Xbox 360 版本）", XboxModPage));
+        AddSpan(modsGroup, Note("服务器文件未发布时，请通过官方页面下载。ZIP 可直接导入；7z/RAR 请先解压并选择 common.tpf.dcx。"));
+        AddSpan(modsGroup, Note("Mod 可能造成存档、画面或联机异常；联机前建议与队友使用相同 Mod，排障时先关闭全部 Mod。" +
+            "启用状态在下次启动游戏时生效；游戏本体不会被覆盖。"));
+        modsStatus = Note("尚未检查 Mod。");
+        AddSpan(modsGroup, modsStatus);
+        modsColumn.Controls.Add(modsGroup.Parent);
 
         TableLayoutPanel saveColumn = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -1392,7 +1536,10 @@ sealed class MainForm : Form {
         savePage.Controls.Add(saveColumn);
         TableLayoutPanel saveLocation = Group("独立存档目录", 3);
         saveRootBox = new TextBox { Dock = DockStyle.Fill };
-        saveRootBox.TextChanged += delegate { if (shaderCacheStatus != null) RefreshShaderCache(); };
+        saveRootBox.TextChanged += delegate {
+            if (shaderCacheStatus != null) RefreshShaderCache();
+            if (modsStatus != null) RefreshMods();
+        };
         AddRow(saveLocation, "玩家数据目录", saveRootBox, Browse(saveRootBox, "选择独立的玩家数据和存档目录"));
         autoBackup = Check("启动前和退出后自动备份存档（最多保留 20 份自动备份）");
         AddSpan(saveLocation, autoBackup);
@@ -1537,7 +1684,7 @@ sealed class MainForm : Form {
             hero.Controls.Add(heroText);
             Controls.Add(hero);
         }
-        AcceptButton = installButton;
+        AcceptButton = null; // Never install or launch just by pressing Enter in a path field.
         UpdateButtons();
     }
 
@@ -1715,9 +1862,8 @@ sealed class MainForm : Form {
         rootBox.Text = !string.IsNullOrEmpty(rootArgument) ? Path.GetFullPath(rootArgument) : Get(state, "install_root", defaultRoot);
         gameBox.Text = Get(state, "game_dir", "");
         saveRootBox.Text = Get(state, "save_root", SaveTools.DefaultRoot);
+        modsEnabled.Checked = Get(state, "mods_enabled", "1") == "1";
         autoBackup.Checked = Get(state, "auto_backup", "1") == "1";
-        string oldHuntersPath = Path.Combine(saveRootBox.Text, "addcont", "CUSA03173", "SPEXPANSIONDLC03");
-        oldHunters.Checked = Directory.Exists(oldHuntersPath) || Get(state, "old_hunters", "0") == "1";
         string savedCoreMode = Get(state, "core_mode", "native");
         SelectValue(coreMode, savedCoreMode == "shadp2p" ? "native_lan" : savedCoreMode);
         lanAddressBox.Text = Get(state, "lan_address", LocalLanAddress());
@@ -1734,7 +1880,6 @@ sealed class MainForm : Form {
         onlinePasswordBox.Text = UnprotectSecret(Get(state, "online_password_dpapi", ""));
         onlineQqBox.Text = UnprotectSecret(Get(state, "online_qq_dpapi", ""));
         onlineNicknameBox.Text = Get(state, "online_nickname", "");
-        onlineShowInList.Checked = Get(state, "online_show_in_list", "0") == "1";
         onlineApplicationId = Get(state, "online_application_id", "");
         onlineApplicationToken = UnprotectSecret(Get(state, "online_application_token_dpapi", ""));
         if (onlineApplicationId.Length > 0 && onlineApplicationToken.Length > 0)
@@ -1752,8 +1897,13 @@ sealed class MainForm : Form {
         SelectValue(preset, Get(ini, "preset", Default("preset")));
         SelectValue(live, Get(ini, "live_resolution", Default("live_resolution")));
         SelectValue(modelLod, Get(ini, "model_lod", Default("model_lod")));
-        SelectValue(language, Get(state, "language", "1"));
         fullscreen.Checked = Get(ini, "fullscreen", "1") == "1";
+        hdrOutput.Checked = Get(ini, "hdr_output", "0") == "1";
+        int hdrValue;
+        if (int.TryParse(Get(ini, "hdr_peak_nits", "1000"), out hdrValue))
+            hdrPeakNits.Value = Math.Max(hdrPeakNits.Minimum, Math.Min(hdrPeakNits.Maximum, hdrValue));
+        if (int.TryParse(Get(ini, "hdr_paper_white_nits", "200"), out hdrValue))
+            hdrPaperWhiteNits.Value = Math.Max(hdrPaperWhiteNits.Minimum, Math.Min(hdrPaperWhiteNits.Maximum, hdrValue));
         showFps.Checked = Get(ini, "show_fps", Default("show_fps")) == "1";
         sharpen.Checked = Get(ini, "sharpen", Default("sharpen")) == "1";
         shaderFrameStats.Checked = Get(state, "shader_frame_stats", "0") == "1";
@@ -1767,14 +1917,26 @@ sealed class MainForm : Form {
         startMenuLink.Checked = Get(state, "start_menu_link", "1") == "1";
         foreach (KeyValuePair<string, ComboBox> binding in keyBindings)
             SelectValue(binding.Value, Get(state, "BB_KEY_" + binding.Key, Value(binding.Value)));
+        for (int i = 0; i < chordActions.Length; ++i)
+            SelectValue(chordActions[i], Get(state, "BB_KEY_CHORD" + (i + 1) + "_ACTION", "none"));
+        decimal walkValue;
+        if (decimal.TryParse(Get(state, "BB_KEY_WALK_STRENGTH", "0.45"), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out walkValue))
+            walkStrength.Value = Math.Max(walkStrength.Minimum, Math.Min(walkStrength.Maximum, walkValue));
         foreach (KeyValuePair<string, ComboBox> binding in gamepadBindings)
             SelectValue(binding.Value, Get(state, "BB_PAD_" + binding.Key, Value(binding.Value)));
         mouseEnabled.Checked = Get(state, "BB_MOUSE_ENABLED", "1") == "1";
+        mouseDirect.Checked = Get(state, "BB_MOUSE_CAMERA", "direct") == "direct";
         mouseInvert.Checked = Get(state, "BB_MOUSE_INVERT_Y", "0") == "1";
         decimal sensitivity;
         if (decimal.TryParse(Get(state, "BB_MOUSE_SENSITIVITY", "3.0"), NumberStyles.Float,
             CultureInfo.InvariantCulture, out sensitivity))
             mouseSensitivity.Value = Math.Max(mouseSensitivity.Minimum, Math.Min(mouseSensitivity.Maximum, sensitivity));
+        if (decimal.TryParse(Get(state, "BB_MOUSE_DIRECT_SENSITIVITY", "1.0"), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out sensitivity))
+            mouseDirectSensitivity.Value = Math.Max(mouseDirectSensitivity.Minimum,
+                Math.Min(mouseDirectSensitivity.Maximum, sensitivity));
+        UpdateMouseModeUi();
         SelectValue(mouseLeft, Get(state, "BB_MOUSE_LEFT", "r1"));
         SelectValue(mouseRight, Get(state, "BB_MOUSE_RIGHT", "l1"));
         SelectValue(mouseMiddle, Get(state, "BB_MOUSE_MIDDLE", "r3"));
@@ -1787,6 +1949,7 @@ sealed class MainForm : Form {
         preset.Enabled = UpscalerUsesPreset(Value(upscaler));
         CheckGame();
         RefreshSaveManager();
+        RefreshMods();
         RefreshShaderCache();
     }
 
@@ -2010,6 +2173,179 @@ sealed class MainForm : Form {
     static void WriteJson(string path, object value) {
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         File.WriteAllText(path, JsonSerializer().Serialize(value), new UTF8Encoding(false));
+    }
+
+    string ModsRoot() {
+        string root = saveRootBox.Text.Trim().Trim('"');
+        if (root.Length == 0) throw new InvalidDataException("请先在“存档管理”选择玩家数据目录。");
+        root = Path.GetFullPath(root);
+        if (Path.GetPathRoot(root).Equals(root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("玩家数据目录不能是磁盘根目录。");
+        return Path.Combine(root, "mods");
+    }
+
+    string ModsProfilePath() { return Path.Combine(Path.GetDirectoryName(ModsRoot()), "mods.json"); }
+
+    static Dictionary<string, object> ReadModProfile(string path) {
+        if (!File.Exists(path)) return new Dictionary<string, object>();
+        Dictionary<string, object> profile = JsonSerializer().DeserializeObject(File.ReadAllText(path, Encoding.UTF8))
+            as Dictionary<string, object>;
+        if (profile == null) throw new InvalidDataException("mods.json 不是有效的 Mod 配置。");
+        return profile;
+    }
+
+    static List<string> ModNames(Dictionary<string, object> profile, string key) {
+        object raw;
+        if (!profile.TryGetValue(key, out raw)) return new List<string>();
+        object[] values = raw as object[];
+        if (values == null || values.Any(value => !(value is string)))
+            throw new InvalidDataException("mods.json 的 " + key + " 必须是名称列表。");
+        return values.Cast<string>().ToList();
+    }
+
+    static void WriteModProfile(string path, Dictionary<string, object> profile) {
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        string temp = path + ".new-" + Guid.NewGuid().ToString("N");
+        try {
+            File.WriteAllText(temp, JsonSerializer().Serialize(profile), new UTF8Encoding(false));
+            if (File.Exists(path)) File.Replace(temp, path, path + ".bak", true);
+            else File.Move(temp, path);
+        } finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    void RefreshMods() {
+        if (modsList == null || saveRootBox == null) return;
+        try {
+            string root = ModsRoot();
+            Dictionary<string, object> profile = ReadModProfile(ModsProfilePath());
+            List<string> order = ModNames(profile, "order");
+            HashSet<string> disabled = new HashSet<string>(ModNames(profile, "disabled"), StringComparer.Ordinal);
+            List<string> available = Directory.Exists(root) ? Directory.GetDirectories(root)
+                .Select(Path.GetFileName).Where(name => !name.StartsWith(".")).OrderBy(name => name,
+                    StringComparer.OrdinalIgnoreCase).ToList() : new List<string>();
+            List<string> arranged = order.Concat(available).Where(available.Contains)
+                .Distinct(StringComparer.Ordinal).ToList();
+            refreshingMods = true;
+            try {
+                modsList.BeginUpdate();
+                modsList.Items.Clear();
+                foreach (string name in arranged) {
+                    bool layout = Directory.Exists(Path.Combine(root, name, "dvdroot_ps4")) ||
+                        Directory.Exists(Path.Combine(root, name, "menu")) ||
+                        Directory.Exists(Path.Combine(root, name, "chr"));
+                    ListViewItem item = new ListViewItem(name);
+                    item.SubItems.Add(layout ? "下次启动生效" : "请检查目录结构");
+                    item.Checked = !disabled.Contains(name);
+                    modsList.Items.Add(item);
+                }
+            } finally { modsList.EndUpdate(); refreshingMods = false; }
+            modsStatus.Text = "已发现 " + arranged.Count + " 个 Mod；文件目录：" + root;
+        } catch (Exception e) { modsStatus.Text = "Mod 列表读取失败：" + e.Message; }
+    }
+
+    void SaveModProfile() {
+        try {
+            string path = ModsProfilePath();
+            Dictionary<string, object> profile = ReadModProfile(path);
+            profile["order"] = modsList.Items.Cast<ListViewItem>().Select(item => item.Text).ToArray();
+            profile["disabled"] = modsList.Items.Cast<ListViewItem>().Where(item => !item.Checked)
+                .Select(item => item.Text).ToArray();
+            WriteModProfile(path, profile);
+            modsStatus.Text = "Mod 开关已保存；下次启动游戏时生效。";
+        } catch (Exception e) { Warn("保存 Mod 开关失败：" + e.Message); RefreshMods(); }
+    }
+
+    void MoveMod(int delta) {
+        if (modsList.SelectedItems.Count != 1) return;
+        ListViewItem item = modsList.SelectedItems[0];
+        int next = item.Index + delta;
+        if (next < 0 || next >= modsList.Items.Count) return;
+        refreshingMods = true;
+        try {
+            modsList.Items.Remove(item);
+            modsList.Items.Insert(next, item);
+            item.Selected = true;
+            item.Focused = true;
+        } finally { refreshingMods = false; }
+        SaveModProfile();
+    }
+
+    void DisableImportedXboxMod() {
+        string path = ModsProfilePath();
+        Dictionary<string, object> profile = ReadModProfile(path);
+        List<string> disabled = ModNames(profile, "disabled");
+        if (!disabled.Contains(XboxModName)) disabled.Add(XboxModName);
+        profile["disabled"] = disabled.ToArray();
+        WriteModProfile(path, profile);
+    }
+
+    void ImportXboxMod() {
+        using (OpenFileDialog dialog = new OpenFileDialog { Title = "选择 Nexus 下载的 Xbox 按钮 ZIP 或解压后的 common.tpf.dcx",
+            Filter = "Xbox Mod (*.zip;common.tpf.dcx)|*.zip;common.tpf.dcx|ZIP 文件 (*.zip)|*.zip|贴图文件 (common.tpf.dcx)|common.tpf.dcx",
+            CheckFileExists = true }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            try {
+                XboxModArchive.Import(dialog.FileName, ModsRoot(), XboxModName);
+                DisableImportedXboxMod();
+                RefreshMods();
+                MessageBox.Show(this, "已导入 Xbox 按钮 Mod，默认保持关闭。请在列表中勾选启用；下次启动生效。\r\n\r\n来源：Dommo / Nexus Mods。",
+                    TitleText, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            } catch (Exception e) { Warn("导入 Mod 失败：" + e.Message); }
+        }
+    }
+
+    void OpenModsFolder() {
+        try {
+            string root = ModsRoot();
+            Directory.CreateDirectory(root);
+            Process.Start(new ProcessStartInfo(root) { UseShellExecute = true });
+        } catch (Exception e) { Warn("无法打开 Mod 目录：" + e.Message); }
+    }
+
+    void DownloadXboxMod() {
+        string url = XboxModUrl;
+        string hash = XboxModSha256;
+        Uri portal, source;
+        if (!Uri.TryCreate(PublicPortalUrl(), UriKind.Absolute, out portal) ||
+            !Uri.TryCreate(url, UriKind.Absolute, out source) ||
+            source.Scheme != Uri.UriSchemeHttps || source.Host != portal.Host ||
+            source.Port != portal.Port || !source.AbsolutePath.StartsWith("/windows/mods/", StringComparison.Ordinal) ||
+            source.Query.Length != 0 || source.Fragment.Length != 0 ||
+            !Regex.IsMatch(hash, "^[0-9a-fA-F]{64}$")) {
+            Warn("服务器尚未提供经过 SHA-256 校验的 Xbox 按钮 Mod。请在官方页面下载现代 Xbox 版，再点“导入 Xbox 按钮文件”。若是 7z/RAR，请先解压并选 common.tpf.dcx。");
+            return;
+        }
+        string temp = Path.Combine(Path.GetTempPath(), "bbport-xbox-" + Guid.NewGuid().ToString("N") + ".zip");
+        try {
+            Cursor = Cursors.WaitCursor;
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(source);
+            request.Timeout = 15000;
+            request.ReadWriteTimeout = 15000;
+            request.AllowAutoRedirect = false;
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) {
+                if (response.StatusCode != HttpStatusCode.OK || response.ContentLength > 128L * 1024 * 1024)
+                    throw new InvalidDataException("服务器文件不可用或体积异常。");
+                using (Stream input = response.GetResponseStream())
+                using (Stream output = File.Create(temp)) {
+                    byte[] buffer = new byte[65536];
+                    long copied = 0;
+                    int count;
+                    while ((count = input.Read(buffer, 0, buffer.Length)) != 0) {
+                        copied += count;
+                        if (copied > 128L * 1024 * 1024) throw new InvalidDataException("服务器文件超过 128 MB。");
+                        output.Write(buffer, 0, count);
+                    }
+                }
+            }
+            if (!FileSha256(temp).Equals(hash, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("服务器文件 SHA-256 与启动器内校验值不符，已停止安装。");
+            XboxModArchive.Import(temp, ModsRoot(), XboxModName);
+            DisableImportedXboxMod();
+            RefreshMods();
+            MessageBox.Show(this, "Xbox 按钮 Mod 已从服务器下载并校验，默认关闭。请在列表中勾选启用。\r\n作者：Dommo。",
+                TitleText, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        } catch (Exception e) { Warn("下载 Xbox 按钮 Mod 失败：" + e.Message); }
+        finally { Cursor = Cursors.Default; if (File.Exists(temp)) File.Delete(temp); }
     }
 
     void ConfigureLanClient(LaunchOptions options) {
@@ -2365,8 +2701,7 @@ sealed class MainForm : Form {
                 onlineServiceStatus.ForeColor = ok ? ThemeSuccess : ThemeDanger;
                 seamlessServiceStatus.Text = onlineServiceStatus.Text;
                 seamlessServiceStatus.ForeColor = onlineServiceStatus.ForeColor;
-                onlineCountStatus.Text = "在线人数：" + (count < 0 ? "暂不可用" : count.ToString()) +
-                    "　公开列表：" + players.Count;
+                onlineCountStatus.Text = "在线人数：" + (count < 0 ? "暂不可用" : count.ToString());
                 seamlessCountStatus.Text = onlineCountStatus.Text;
                 FillOnlineUsersList(onlineUsersList, players);
                 FillOnlineUsersList(seamlessUsersList, players);
@@ -2697,7 +3032,6 @@ sealed class MainForm : Form {
         seamlessPasswordBox.Enabled = !active;
         seamlessQqBox.Enabled = !active;
         seamlessNicknameBox.Enabled = !active;
-        onlineShowInList.Enabled = !active;
         coreMode.Enabled = !active;
         rootBox.Enabled = !active;
         gameBox.Enabled = !active;
@@ -2772,7 +3106,6 @@ sealed class MainForm : Form {
         if (saveRootBox.Text.Trim().Length == 0) { Warn("请先选择玩家数据目录。"); return; }
 
         string applicationId = onlineApplicationId, applicationToken = onlineApplicationToken;
-        bool showInList = onlineShowInList.Checked;
         guidedSeamless = seamless;
         try { PersistOnlineApplication(); }
         catch (Exception e) { Warn("保存账号资料失败：" + e.Message); return; }
@@ -2809,7 +3142,6 @@ sealed class MainForm : Form {
                     GuidedOnlineUi((Action)delegate { GuidedOnlineStatus("2/4 正在申请并验证账号……"); });
                     Dictionary<string, object> apply = new Dictionary<string, object>();
                     apply["qq"] = qq; apply["nickname"] = nickname; apply["npid"] = npid;
-                    apply["show_in_list"] = showInList;
                     result = OnlinePortalRequest("/v1/apply", apply);
                     applicationId = PublicField(result, "application_id");
                     applicationToken = PublicField(result, "application_token");
@@ -2962,7 +3294,7 @@ sealed class MainForm : Form {
         state["online_npid"] = onlineNpidBox.Text.Trim();
         state["online_qq_dpapi"] = ProtectSecret(onlineQqBox.Text.Trim());
         state["online_nickname"] = onlineNicknameBox.Text.Trim();
-        state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
+        state.Remove("online_show_in_list");
         state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
         Directory.CreateDirectory(Path.GetDirectoryName(stateFile));
         WriteSimple(stateFile, state);
@@ -2978,12 +3310,10 @@ sealed class MainForm : Form {
         }
         onlineApplyButton.Enabled = false;
         onlineApplicationStatus.Text = "申请状态：正在提交……";
-        bool show = onlineShowInList.Checked;
         Thread worker = new Thread(new ThreadStart(delegate {
             try {
                 Dictionary<string, object> body = new Dictionary<string, object>();
                 body["qq"] = qq; body["nickname"] = nickname; body["npid"] = npid;
-                body["show_in_list"] = show;
                 Dictionary<string, object> result = OnlinePortalRequest("/v1/apply", body);
                 string id = PublicField(result, "application_id");
                 string token = PublicField(result, "application_token");
@@ -3238,6 +3568,14 @@ sealed class MainForm : Form {
         return true;
     }
 
+    void UpdateMouseModeUi() {
+        if (mouseEnabled == null || mouseDirect == null || mouseSensitivity == null ||
+            mouseDirectSensitivity == null) return;
+        mouseDirect.Enabled = mouseEnabled.Checked;
+        mouseDirectSensitivity.Enabled = mouseEnabled.Checked && mouseDirect.Checked;
+        mouseSensitivity.Enabled = mouseEnabled.Checked && !mouseDirect.Checked;
+    }
+
     void SetGameStatus(string text, bool warning) {
         gameStatus.Text = text;
         gameStatus.ForeColor = warning ? ThemeDanger : ThemeMuted;
@@ -3268,7 +3606,7 @@ sealed class MainForm : Form {
         options.LanEmail = options.PublicOnline ? "" : lanEmailBox.Text.Trim();
         options.LanSecret = options.PublicOnline ? "" : lanSecretBox.Text;
         options.AutoBackup = autoBackup.Checked;
-        options.OldHunters = oldHunters.Checked;
+        options.OldHunters = true;
         options.DesktopLink = desktopLink.Checked;
         options.StartMenuLink = startMenuLink.Checked;
         options.Ini["upscaler"] = Value(upscaler);
@@ -3277,21 +3615,34 @@ sealed class MainForm : Form {
         options.Ini["show_fps"] = showFps.Checked ? "1" : "0";
         options.Ini["output_res"] = Value(resolution);
         options.Ini["fullscreen"] = fullscreen.Checked ? "1" : "0";
+        options.Ini["hdr_output"] = hdrOutput.Checked ? "1" : "0";
+        options.Ini["hdr_peak_nits"] = hdrPeakNits.Value.ToString(CultureInfo.InvariantCulture);
+        options.Ini["hdr_paper_white_nits"] = hdrPaperWhiteNits.Value.ToString(CultureInfo.InvariantCulture);
         options.Ini["live_resolution"] = Value(live);
         options.Ini["model_lod"] = Value(modelLod);
         foreach (KeyValuePair<string, CheckBox> effect in effects) options.Ini[effect.Key] = effect.Value.Checked ? "1" : "0";
         options.Env["BB_FPS"] = Value(frameRate);
-        options.Env["BB_LANGUAGE"] = Value(language);
+        options.Env["BB_LANGUAGE"] = ""; // Let the game's own language setting take precedence.
         options.Env["BB_PRESENT_MODE"] = Value(presentMode);
+        options.Env["BB_HDR"] = hdrOutput.Checked ? "1" : "0";
+        options.Env["BB_HDR_OUTPUT"] = hdrOutput.Checked ? "1" : "0";
+        options.Env["BB_HDR_PEAK"] = hdrPeakNits.Value.ToString(CultureInfo.InvariantCulture);
+        options.Env["BB_HDR_PAPER_WHITE"] = hdrPaperWhiteNits.Value.ToString(CultureInfo.InvariantCulture);
         options.Env["BB_FRAME_STATS"] = shaderFrameStats.Checked ? "1" : "";
         options.Env["BB_GPU_PROFILE"] = shaderGpuProfile.Checked ? "1" : "";
         foreach (KeyValuePair<string, ComboBox> binding in keyBindings)
             options.Env["BB_KEY_" + binding.Key] = Value(binding.Value);
+        for (int i = 0; i < chordActions.Length; ++i)
+            options.Env["BB_KEY_CHORD" + (i + 1) + "_ACTION"] = Value(chordActions[i]);
+        options.Env["BB_KEY_WALK_STRENGTH"] = walkStrength.Value.ToString("0.00", CultureInfo.InvariantCulture);
         foreach (KeyValuePair<string, ComboBox> binding in gamepadBindings)
             options.Env["BB_PAD_" + binding.Key] = Value(binding.Value);
         options.Env["BB_MOUSE_ENABLED"] = mouseEnabled.Checked ? "1" : "0";
+        options.Env["BB_MODS_ENABLED"] = modsEnabled.Checked ? "1" : "0";
+        options.Env["BB_MOUSE_CAMERA"] = mouseDirect.Checked ? "direct" : "stick";
         options.Env["BB_MOUSE_INVERT_Y"] = mouseInvert.Checked ? "1" : "0";
         options.Env["BB_MOUSE_SENSITIVITY"] = mouseSensitivity.Value.ToString("0.0", CultureInfo.InvariantCulture);
+        options.Env["BB_MOUSE_DIRECT_SENSITIVITY"] = mouseDirectSensitivity.Value.ToString("0.0", CultureInfo.InvariantCulture);
         options.Env["BB_MOUSE_LEFT"] = Value(mouseLeft);
         options.Env["BB_MOUSE_RIGHT"] = Value(mouseRight);
         options.Env["BB_MOUSE_MIDDLE"] = Value(mouseMiddle);
@@ -3960,6 +4311,7 @@ sealed class MainForm : Form {
         state["game_dir"] = options.Game;
         state["save_root"] = options.SaveRoot;
         state["auto_backup"] = options.AutoBackup ? "1" : "0";
+        state["mods_enabled"] = modsEnabled.Checked ? "1" : "0";
         state["old_hunters"] = options.OldHunters ? "1" : "0";
         state["core_mode"] = options.LanMode ? "shadp2p" : options.PublicOnline ? "public_online" :
             options.NativeLan ? "native_lan" : "native";
@@ -3972,7 +4324,7 @@ sealed class MainForm : Form {
         state["online_password_dpapi"] = ProtectSecret(onlinePasswordBox.Text);
         state["online_qq_dpapi"] = ProtectSecret(onlineQqBox.Text.Trim());
         state["online_nickname"] = onlineNicknameBox.Text.Trim();
-        state["online_show_in_list"] = onlineShowInList.Checked ? "1" : "0";
+        state.Remove("online_show_in_list");
         state["online_application_id"] = onlineApplicationId;
         state["online_application_token_dpapi"] = ProtectSecret(onlineApplicationToken);
         state["lan_host"] = options.LanHost ? "1" : "0";
@@ -3980,7 +4332,6 @@ sealed class MainForm : Form {
         state["bbsc_lab_mod"] = options.BbscLabMod ? "1" : "0";
         state["quality_profile"] = Value(qualityProfile);
         state["fps"] = options.Env["BB_FPS"];
-        state["language"] = options.Env["BB_LANGUAGE"];
         state["present_mode"] = options.Env["BB_PRESENT_MODE"];
         state["shader_frame_stats"] = shaderFrameStats.Checked ? "1" : "0";
         state["shader_gpu_profile"] = shaderGpuProfile.Checked ? "1" : "0";
@@ -4000,13 +4351,8 @@ sealed class MainForm : Form {
 
     void ConfigureAddons(LaunchOptions options) {
         string path = Path.Combine(options.SaveRoot, "addcont", "CUSA03173", "SPEXPANSIONDLC03");
-        if (options.OldHunters) {
-            Directory.CreateDirectory(path);
-            Log("已启用《老猎人》DLC 授权目录：" + path);
-        } else if (Directory.Exists(path) && Directory.GetFileSystemEntries(path).Length == 0) {
-            // Only remove the empty marker created by this launcher. Never remove a user's dump.
-            Directory.Delete(path, false);
-        }
+        Directory.CreateDirectory(path);
+        Log("已自动启用《老猎人》DLC 授权目录：" + path);
     }
 
     static void WriteIni(string path, Dictionary<string, string> values) {
@@ -4017,6 +4363,10 @@ sealed class MainForm : Form {
             int equals = line.IndexOf('=');
             if (equals <= 0 || line.TrimStart().StartsWith("#")) continue;
             string key = line.Substring(0, equals).Trim();
+            if (key.Equals("dlss5_experimental", StringComparison.OrdinalIgnoreCase)) {
+                lines.RemoveAt(i--); // retire the old experimental setting on the next save
+                continue;
+            }
             if (values.ContainsKey(key)) { lines[i] = key + "=" + values[key]; written.Add(key); }
         }
         if (lines.Count == 0) lines.Add("# bbport settings (in-game menu: Insert / L3+R3)");
@@ -4074,10 +4424,23 @@ sealed class MainForm : Form {
         } catch (Exception e) { Log("生成游戏图标失败：" + e.Message); return null; }
     }
 
+    static bool HasChineseCharacters(string path) {
+        return !string.IsNullOrEmpty(path) && Regex.IsMatch(path, "[\u3400-\u9FFF\uF900-\uFAFF]");
+    }
+
     void StartGame() {
         if (!CheckInputs(true)) return;
         LaunchOptions options = Collect();
-        if (options.LanMode || options.NativeLan) {
+        List<string> chinesePaths = new List<string>();
+        if (HasChineseCharacters(options.Root)) chinesePaths.Add("运行环境：" + options.Root);
+        if (HasChineseCharacters(options.Game)) chinesePaths.Add("游戏目录：" + options.Game);
+        if (chinesePaths.Count > 0 && MessageBox.Show(this,
+            "以下路径含中文字符：\r\n" + string.Join("\r\n", chinesePaths.ToArray()) +
+            "\r\n\r\n部分运行库、Mod 或画面工具可能因此加载失败。建议改用纯英文路径。仍要启动游戏吗？",
+            "路径兼容性提醒", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        bool remoteSeamless = options.LanSeamless && SeamlessOverlayServerIp().Length != 0 && EmbeddedNetReady();
+        if ((options.LanMode || options.NativeLan) && !options.PublicOnline && !remoteSeamless) {
             string titleId = SaveTools.ReadTitleId(options.Game);
             if (!titleId.Equals("CUSA03173", StringComparison.OrdinalIgnoreCase)) {
                 string shown = titleId.Length == 0 ? "无法识别" : titleId;
@@ -4443,6 +4806,7 @@ sealed class MainForm : Form {
             if (lower.Contains("crash report") || lower.Contains(" fault ") || lower.Contains("target region") ||
                 lower.Contains("exception") || lower.Contains("rip=") || lower.Contains("rax=") ||
                 lower.StartsWith("  #") || lower.Contains("gpu guest writes") || lower.Contains("stop:") ||
+                lower.Contains("assertion failed") || lower.Contains("shader cache") ||
                 lower.Contains("memory pool") || lower.Contains("allocatedirectmemory") ||
                 lower.Contains("windows error 1450") || lower.Contains("windows error 1455"))
                 important.Add(line);
@@ -4488,12 +4852,120 @@ sealed class MainForm : Form {
                 MessageBox.Show(this, detail, "Bloodborne PC 崩溃详情（139）",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             } else if (exitCode == 23) {
-                MessageBox.Show(this, "返回代码 23：游戏内容配置或 AppContent 初始化失败。请确认游戏为完整的 v1.09，" +
-                    "且 eboot.bin、sce_sys 和 dvdroot_ps4 来自同一份游戏。\r\n\r\n完整日志：" + (logPath ?? "未生成"),
-                    "Bloodborne PC 启动失败（23）", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                string cachePath = ShaderCacheTools.DirectoryPath(NativeCachePlayerRoot());
+                string detail = "返回代码 23 表示游戏或渲染器触发了内部错误；它不等于游戏文件损坏。" +
+                    "捏脸时出现此错误，请先查看下方首个 STOP／Assertion。若指向 Shader 缓存，" +
+                    "关闭游戏后可将缓存目录改名备份，让下次启动重新生成：\r\n" + cachePath +
+                    "\r\n\r\n本次关键日志：\r\n" +
+                    (diagnostic.Length == 0 ? "没有捕获到错误细节，请查看完整日志。" : diagnostic) +
+                    "\r\n\r\n完整日志：" + (logPath ?? "未生成");
+                MessageBox.Show(this, detail, "Bloodborne PC 错误详情（23）",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         RefreshSaveManager();
+        if (error != null || exitCode != 0) OfferCrashReport(error, exitCode, logPath, diagnostic);
+    }
+
+    void OfferCrashReport(string error, int exitCode, string logPath, string diagnostic) {
+        if (string.IsNullOrEmpty(logPath) || !File.Exists(logPath)) return;
+        string portal = PublicPortalUrl();
+        if (!portal.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+        DialogResult consent = MessageBox.Show(this,
+            "是否把这次报错发到玩家论坛，方便管理员排查？\r\n\r\n公开帖子会显示报错摘要和脱敏后的运行日志末尾 100 行。" +
+            "您输入的 QQ 号和完整日志附件仅管理员可见。原始日志可能包含个人信息，请确认后再提交。",
+            "提交报错到论坛", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (consent != DialogResult.Yes) return;
+        string qq = AskReportQq();
+        if (qq == null) return;
+        string summary = error ?? (diagnostic.Length > 0 ? diagnostic.Split('\n')[0].Trim() : "游戏退出，返回代码 " + exitCode);
+        if (summary.Length > 500) summary = summary.Substring(0, 500);
+        statusLabel.Text = "正在准备并上传报错日志…";
+        ThreadPool.QueueUserWorkItem(delegate {
+            try {
+                string reportUrl = UploadCrashReport(portal, qq, exitCode, summary, logPath);
+                BeginInvoke((Action)delegate {
+                    statusLabel.Text = "报错已提交到玩家论坛。";
+                    MessageBox.Show(this, "报错已提交。管理员可通过 QQ 联系您。\r\n" + reportUrl,
+                        "提交成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                });
+            } catch (Exception ex) {
+                BeginInvoke((Action)delegate {
+                    statusLabel.Text = "报错未能上传；本地日志仍然保留。";
+                    MessageBox.Show(this, "上传失败：" + ex.Message + "\r\n本地日志：" + logPath,
+                        "提交失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                });
+            }
+        });
+    }
+
+    string AskReportQq() {
+        using (Form dialog = new Form()) {
+            dialog.Text = "报错联系信息";
+            dialog.Font = Font;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.MinimizeBox = false;
+            dialog.MaximizeBox = false;
+            dialog.ClientSize = new Size(S(420), S(155));
+            Label prompt = new Label { AutoSize = true, Text = "QQ 号（仅论坛管理员可见）：", Location = new Point(S(16), S(18)) };
+            TextBox input = new TextBox { MaxLength = 12, Location = new Point(S(16), S(48)), Width = S(380) };
+            Button ok = new Button { Text = "确认上传", DialogResult = DialogResult.OK,
+                AutoSize = true, Location = new Point(S(210), S(100)) };
+            Button cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel,
+                AutoSize = true, Location = new Point(S(316), S(100)) };
+            dialog.Controls.AddRange(new Control[] { prompt, input, ok, cancel });
+            dialog.AcceptButton = ok;
+            dialog.CancelButton = cancel;
+            while (dialog.ShowDialog(this) == DialogResult.OK) {
+                if (Regex.IsMatch(input.Text.Trim(), @"^[1-9][0-9]{4,11}$")) return input.Text.Trim();
+                MessageBox.Show(dialog, "请输入 5–12 位 QQ 号。", "QQ 号格式不正确", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return null;
+        }
+    }
+
+    static string UploadCrashReport(string portal, string qq, int exitCode, string summary, string logPath) {
+        FileInfo source = new FileInfo(logPath);
+        if (source.Length > 16 * 1024 * 1024) throw new InvalidDataException("日志超过 16 MB，请手动整理后在论坛上传。");
+        Queue<string> tail = new Queue<string>();
+        foreach (string line in File.ReadLines(logPath, Encoding.UTF8)) {
+            tail.Enqueue(line);
+            if (tail.Count > 100) tail.Dequeue();
+        }
+        byte[] data = File.ReadAllBytes(logPath);
+        string name = Path.GetFileName(logPath);
+        if (data.Length > 4 * 1024 * 1024) {
+            using (MemoryStream stream = new MemoryStream()) {
+                using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Create, true)) {
+                    ZipArchiveEntry entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+                    using (Stream output = entry.Open()) output.Write(data, 0, data.Length);
+                }
+                data = stream.ToArray();
+            }
+            name += ".zip";
+        }
+        if (data.Length > 4 * 1024 * 1024) throw new InvalidDataException("压缩后的日志仍超过 4 MB，请手动整理后在论坛上传。");
+        Dictionary<string, object> body = new Dictionary<string, object> {
+            { "qq", qq }, { "version", PackageVersion.Length == 0 ? "unknown" : PackageVersion },
+            { "exit_code", exitCode }, { "summary", summary },
+            { "tail", string.Join("\n", tail.ToArray()) },
+            { "files", new object[] { new Dictionary<string, object> { { "name", name }, { "data", Convert.ToBase64String(data) } } } }
+        };
+        byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer().Serialize(body));
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(portal + "/windows/api/reports");
+        request.Method = "POST";
+        request.ContentType = "application/json; charset=utf-8";
+        request.ContentLength = payload.Length;
+        request.Timeout = 30000;
+        request.ReadWriteTimeout = 30000;
+        using (Stream stream = request.GetRequestStream()) stream.Write(payload, 0, payload.Length);
+        using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+        using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8)) {
+            Dictionary<string, object> result = JsonSerializer().DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+            if (result == null || !result.ContainsKey("id")) throw new InvalidDataException("论坛没有返回帖子编号。");
+            return portal + "/windows/forum/#thread/" + Convert.ToString(result["id"], CultureInfo.InvariantCulture);
+        }
     }
 
     void Log(string line) { pending.Enqueue(line); }
@@ -4518,6 +4990,12 @@ sealed class MainForm : Form {
             seamlessManualLaunchButton.Enabled = !busy && !onlineSetupInProgress && SeamlessOverlayServerIp().Length != 0;
         if (shaderExportButton != null) shaderExportButton.Enabled = !busy;
         if (shaderImportButton != null) shaderImportButton.Enabled = !busy;
+        if (modsImportButton != null) modsImportButton.Enabled = !busy;
+        if (modsDownloadButton != null) modsDownloadButton.Enabled = !busy &&
+            XboxModUrl.Length != 0 && XboxModSha256.Length != 0;
+        if (modsRefreshButton != null) modsRefreshButton.Enabled = !busy;
+        if (modsUpButton != null) modsUpButton.Enabled = !busy;
+        if (modsDownButton != null) modsDownButton.Enabled = !busy;
         if (lanStartServerButton != null)
             lanStartServerButton.Enabled = !busy && (shadNetProcess == null || shadNetProcess.HasExited);
         if (lanStopServerButton != null)

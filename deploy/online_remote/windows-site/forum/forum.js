@@ -119,6 +119,17 @@
     return wrap;
   }
 
+  function fileList(items) {
+    const wrap = node('div', 'post-files');
+    for (const item of items || []) {
+      const link = node('a', 'file-link', '📎 ' + item.name + (item.admin_only ? ' · 仅管理员' : ''));
+      link.href = api + '/files/' + item.id;
+      link.download = item.name;
+      wrap.append(link);
+    }
+    return wrap;
+  }
+
   async function loadThread(id) {
     resetViews('detail');
     detail.replaceChildren(node('p', '', '正在读取讨论…'));
@@ -134,7 +145,8 @@
         node('time', '', time(thread.created_at)));
       const pill = statusPill(thread.status);
       if (pill) meta.append(pill);
-      detail.append(back, meta, node('h2', '', thread.title), node('p', 'post-body', thread.body), imageList(thread.images));
+      detail.append(back, meta, node('h2', '', thread.title), node('p', 'post-body', thread.body), imageList(thread.images), fileList(thread.files));
+      if (thread.report_qq) detail.append(node('p', 'input-hint', '报错联系 QQ（仅管理员可见）：' + thread.report_qq));
       const section = node('section', 'reply-section');
       section.append(node('h3', '', '回复 · ' + thread.replies.length));
       for (const reply of thread.replies) {
@@ -143,7 +155,7 @@
         replyMeta.append(node('strong', '', reply.nickname), node('time', '', time(reply.created_at)));
         const replyPill = statusPill(reply.status);
         if (replyPill) replyMeta.append(replyPill);
-        card.append(replyMeta, node('p', 'post-body', reply.body), imageList(reply.images));
+        card.append(replyMeta, node('p', 'post-body', reply.body), imageList(reply.images), fileList(reply.files));
         section.append(card);
       }
       if (thread.status === 'visible') {
@@ -155,16 +167,19 @@
           body.placeholder = '分享你的经验或补充复现步骤…';
           const files = node('input');
           files.type = 'file'; files.accept = 'image/png,image/jpeg,image/webp'; files.multiple = true;
-          const hint = node('p', 'input-hint', '可附最多两张截图，每张不超过 3 MB。');
+          const attachments = node('input');
+          attachments.type = 'file'; attachments.accept = '.log,.txt,.jsonl,.zip'; attachments.multiple = true;
+          const hint = node('p', 'input-hint', '最多六张截图（每张 3 MB）和三个日志附件（每个 4 MB）；附件会随回复公开。');
           const submit = node('button', 'button button-primary', '发布回复');
           submit.type = 'submit';
-          form.append(body, files, hint, submit);
+          form.append(body, files, attachments, hint, submit);
           form.addEventListener('submit', async (event) => {
             event.preventDefault(); submit.disabled = true;
             try {
               const images = await readImages(files.files);
+              const uploadFiles = await readFiles(attachments.files);
               const result = await request('/threads/' + id + '/replies', {
-                method: 'POST', body: JSON.stringify({ body: body.value, images }) });
+                method: 'POST', body: JSON.stringify({ body: body.value, images, files: uploadFiles }) });
               say(result.status === 'pending' ? '回复已提交，等待管理员审核。' : '回复已发布。');
               await loadThread(id);
             } catch (error) { say(error.message, true); }
@@ -181,7 +196,7 @@
   }
 
   async function readImages(files) {
-    if (files.length > 2) throw new Error('每条最多上传两张图片');
+    if (files.length > 6) throw new Error('每条最多上传六张图片');
     const images = [];
     for (const file of files) {
       if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024)
@@ -195,6 +210,23 @@
       images.push({ mime: file.type, data });
     }
     return images;
+  }
+
+  async function readFiles(files) {
+    if (files.length > 3) throw new Error('每条最多上传三个附件');
+    const output = [];
+    for (const file of files) {
+      if (!/\.(log|txt|jsonl|zip)$/i.test(file.name) || file.size > 4 * 1024 * 1024)
+        throw new Error('附件仅支持 LOG、TXT、JSONL、ZIP，每个不超过 4 MB');
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      output.push({ name: file.name, data });
+    }
+    return output;
   }
 
   function openAuth() { dialog.showModal(); $('auth-nickname').focus(); }
@@ -220,7 +252,7 @@
       for (const item of items) {
         const card = node('div', 'moderation-item');
         card.append(node('strong', '', (item.kind === 'thread' ? '讨论' : '回复') + ' · ' + item.nickname),
-          node('p', '', (item.title ? item.title + '\n' : '') + item.body), imageList(item.images));
+          node('p', '', (item.title ? item.title + '\n' : '') + item.body), imageList(item.images), fileList(item.files));
         for (const [decision, label] of [['approve', '通过'], ['reject', '拒绝']]) {
           const button = node('button', '', label); button.type = 'button';
           button.addEventListener('click', async () => {
@@ -264,9 +296,10 @@
     const submit = $('thread-form').querySelector('button[type=submit]'); submit.disabled = true;
     try {
       const images = await readImages($('thread-images').files);
+      const uploadFiles = await readFiles($('thread-files').files);
       const result = await request('/threads', { method: 'POST', body: JSON.stringify({
         category: $('thread-category').value, title: $('thread-title').value,
-        body: $('thread-body').value, images }) });
+        body: $('thread-body').value, images, files: uploadFiles }) });
       $('thread-form').reset();
       if (result.status === 'pending') {
         showingMine = true; $('my-threads-button').textContent = '所有讨论';

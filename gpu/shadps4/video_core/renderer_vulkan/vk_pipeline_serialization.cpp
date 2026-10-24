@@ -36,6 +36,34 @@ static bool HasSpecId(std::span<const u32> spv, u32 spec_id) {
     return false;
 }
 
+// Cached binaries are files on disk, not trusted compiler output. A torn or stale SPIR-V
+// record must be ignored rather than handed to Vulkan's assertion-based shader path.
+static vk::ShaderModule TryCompileCachedSPV(std::span<const u32> spv, vk::Device device) {
+    if (spv.size() < 5 || spv[0] != 0x07230203 || spv[3] == 0 || spv[4] != 0) {
+        LOG_WARNING(Render_Vulkan, "Ignoring malformed cached SPIR-V header");
+        return {};
+    }
+    for (size_t i = 5; i < spv.size();) {
+        const size_t words = spv[i] >> 16;
+        if (words == 0 || words > spv.size() - i) {
+            LOG_WARNING(Render_Vulkan, "Ignoring malformed cached SPIR-V instructions");
+            return {};
+        }
+        i += words;
+    }
+    const vk::ShaderModuleCreateInfo info{
+        .codeSize = spv.size() * sizeof(u32),
+        .pCode = spv.data(),
+    };
+    const auto [result, module] = device.createShaderModule(info);
+    if (result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "Ignoring cached SPIR-V rejected by Vulkan: {}",
+                    vk::to_string(result));
+        return {};
+    }
+    return module;
+}
+
 void RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata) {
     if (!Storage::DataBase::Instance().IsOpened()) {
@@ -299,7 +327,11 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
     if (new_program) {
-        module = CompileSPV(spv, instance.GetDevice());
+        module = TryCompileCachedSPV(spv, instance.GetDevice());
+        if (!module) {
+            program_cache.erase(program->info.pgm_hash);
+            return false;
+        }
         it_pgm.value() = std::move(program);
     } else {
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
@@ -317,7 +349,10 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
             }
             module = it->module;
         } else {
-            module = CompileSPV(spv, instance.GetDevice());
+            module = TryCompileCachedSPV(spv, instance.GetDevice());
+            if (!module) {
+                return false;
+            }
         }
     }
     it_pgm.value()->InsertPermut(module, std::move(spec), perm_idx);
@@ -375,28 +410,37 @@ void PipelineCache::WarmUp() {
     Storage::DataBase::Instance().ForEachBlob(
         Storage::BlobType::PipelineKey, [&](std::vector<u8>&& data) {
             ++num_total_pipelines;
+            try {
+                Serialization::Archive ar{std::move(data)};
+                Serialization::Reader pldata{ar};
 
-            Serialization::Archive ar{std::move(data)};
-            Serialization::Reader pldata{ar};
+                u32 version{};
+                pldata.Read(version);
+                if (version != Serialization::PipelineKeyVersion) {
+                    return;
+                }
 
-            u32 version{};
-            pldata.Read(version);
-            if (version != Serialization::PipelineKeyVersion) {
-                return;
-            }
+                u32 is_compute{};
+                pldata.Read(is_compute);
+                if (is_compute > 1) {
+                    throw Serialization::CorruptArchive{};
+                }
 
-            u32 is_compute{};
-            pldata.Read(is_compute);
-
-            bool result{};
-            if (is_compute) {
-                result = LoadComputePipeline(ar);
-            } else {
-                result = LoadGraphicsPipeline(ar);
-            }
-
-            if (result) {
-                ++num_pipelines;
+                const bool result = is_compute ? LoadComputePipeline(ar)
+                                               : LoadGraphicsPipeline(ar);
+                if (result) {
+                    ++num_pipelines;
+                }
+            } catch (const Serialization::CorruptArchive&) {
+                LOG_WARNING(Render, "Skipping corrupt cached pipeline; it will compile again");
+                sel.infos.fill(nullptr);
+                sel.modules.fill(nullptr);
+                sel.fetch_shader.reset();
+            } catch (const std::invalid_argument&) {
+                LOG_WARNING(Render, "Skipping invalid cached shader metadata; it will compile again");
+                sel.infos.fill(nullptr);
+                sel.modules.fill(nullptr);
+                sel.fetch_shader.reset();
             }
         });
 
@@ -470,8 +514,9 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     srt.Read(this, sizeof(*this));
 
     if (walker_func_size) {
-        walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
+        const auto* walker_code = ar.CurrPtr();
         ar.Advance(walker_func_size);
+        walker_func = RegisterWalkerCode(walker_code, walker_func_size);
     }
 
     return true;

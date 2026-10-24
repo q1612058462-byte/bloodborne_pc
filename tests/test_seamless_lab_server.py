@@ -138,6 +138,20 @@ def start_relay(host, port):
             with self.assertRaises(RuntimeError):
                 lab_server.patch_relay_lifecycle(server)
 
+    def test_modern_relay_is_verified_without_rewriting_upstream(self):
+        modern = ("class RelayClient:\nRELAY_QUEUE_LIMIT = 512 * 1024\n"
+                  "def _relay_forward(conn, payload):\n"
+                  "def _writer(self):\n"
+                  "def _relay_unregister_client(conn):\n")
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            server = Path(directory) / "bbsc_gameserver.py"
+            server.write_text(modern, encoding="utf-8")
+            self.assertEqual(lab_server.ensure_relay_lifecycle(server), "bbsc-0.0.2")
+            self.assertEqual(server.read_text(encoding="utf-8"), modern)
+            server.write_text("class RelayClient:\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                lab_server.ensure_relay_lifecycle(server)
+
     def test_region_specific_status_fields_and_languages(self):
         xml = ("<ss>0</ss>\n<msg2><lang3></lang3><lang19></lang19></msg2>\n"
                "<BetaTestWebUrl2><lang3>https://example.invalid/</lang3>"

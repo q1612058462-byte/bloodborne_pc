@@ -12,6 +12,7 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 #include <boost/container/static_vector.hpp>
+#include <algorithm>
 
 namespace Vulkan::HostPasses {
 
@@ -183,6 +184,8 @@ void PostProcessingPass::Create(vk::Device device, const vk::Format surface_form
 
 void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
                                 vk::Extent2D input_size, Frame& frame, Settings settings) {
+    settings.input_aspect = float(input_size.width) / std::max(1u, input_size.height);
+    settings.output_aspect = float(frame.width) / std::max(1u, frame.height);
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
             .pLabelName = "Host/Post processing",

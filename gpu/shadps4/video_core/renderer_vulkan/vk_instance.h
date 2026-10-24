@@ -490,6 +490,12 @@ public:
         return total_memory_budget;
     }
 
+    /// Physical device-local heap size; unlike the live driver budget this does
+    /// not shrink when other processes use VRAM.
+    [[nodiscard]] u64 GetDeviceLocalMemory() const {
+        return total_local_memory;
+    }
+
     /// Determines if a format is supported for a set of feature flags.
     [[nodiscard]] bool IsFormatSupported(vk::Format format, vk::FormatFeatureFlags2 flags) const;
 
@@ -573,6 +579,7 @@ private:
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
+    u64 total_local_memory{};
     std::vector<size_t> valid_heaps;
 };
 

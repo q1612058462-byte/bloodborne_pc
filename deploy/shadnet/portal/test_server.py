@@ -98,23 +98,25 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(payload["user"], "1")
             self.assertIn("expiration", payload)
 
-    def test_status_requires_registration_and_consent(self):
+    def test_status_lists_every_identified_online_account(self):
         with patch.object(server, "AUTO_APPROVE", True):
             visible = self.application()
             self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
                                    (visible["application_id"],))
             self.portal.db.commit()
-        usage = {"total_users": 3}
         online = {"users": [
             {"npid": "Hunter01", "title_id": "CUSA03173", "title_name": "Bloodborne"},
             {"npid": "Unregistered", "title_name": "Bloodborne"},
             {"npid": "Invisible", "appear_offline": True}]}
-        with patch.object(server, "stats", side_effect=[usage, online, usage, online]):
+        with patch.object(server, "stats", return_value=online):
             first = self.portal.snapshot()
             second = self.portal.snapshot()
         self.assertEqual(first["online_players"], 3)
-        self.assertEqual(first["listed_players"], 1)
-        self.assertEqual(first["users"][0]["nickname"], "猎人甲")
+        self.assertEqual(first["listed_players"], 3)
+        players = {user["npid"]: user for user in first["users"]}
+        self.assertEqual(players["Hunter01"]["nickname"], "猎人甲")
+        self.assertEqual(players["Unregistered"]["nickname"], "Unregistered")
+        self.assertIn("Invisible", players)
         self.assertEqual(second["users"], first["users"])
         self.assertEqual(self.portal.db.execute(
             "SELECT login_count FROM activity WHERE npid='Hunter01'").fetchone()[0], 1)
@@ -133,31 +135,38 @@ class PortalTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.portal.presence(dict(body, application_token="wrong"))
         self.assertTrue(self.portal.presence(body)["ok"])
-        with patch.object(server, "stats", side_effect=[{"total_users": 0}, {"users": []}]):
+        with patch.object(server, "stats", return_value={"users": []}):
             result = self.portal.snapshot()
         self.assertEqual(result["online_players"], 1)
         self.assertEqual(result["seamless_online_players"], 1)
         self.assertEqual(result["users"][0]["title_name"], "Bloodborne（无缝）")
         self.assertEqual(result["users"][0]["npid"], "Hunter01")
         self.portal.seamless_presence["hunter01"] = 0
-        with patch.object(server, "stats", side_effect=[{"total_users": 0}, {"users": []}]):
+        with patch.object(server, "stats", return_value={"users": []}):
             self.assertEqual(self.portal.snapshot()["online_players"], 0)
 
-    def test_seamless_presence_deduplicates_traditional_login_and_respects_opt_out(self):
+    def test_seamless_presence_deduplicates_traditional_login_and_lists_legacy_opt_out(self):
         with patch.object(server, "AUTO_APPROVE", True):
             applied = self.application(listed=False)
         self.portal.db.execute("UPDATE applications SET state='registered' WHERE id=?",
+                               (applied["application_id"],))
+        # Model an account registered before the mandatory-public policy.
+        self.portal.db.execute("UPDATE applications SET show_in_list=0 WHERE id=?",
                                (applied["application_id"],))
         self.portal.db.commit()
         body = {"application_id": applied["application_id"],
                 "application_token": applied["application_token"], "state": "online"}
         self.portal.presence(body)
-        with patch.object(server, "stats", side_effect=[{"total_users": 1},
-                {"users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}]):
+        with patch.object(server, "stats", return_value={
+                "users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}):
             result = self.portal.snapshot()
         self.assertEqual(result["online_players"], 1)
         self.assertEqual(result["seamless_online_players"], 1)
-        self.assertEqual(result["users"], [])
+        self.assertEqual(result["listed_players"], 1)
+        self.assertEqual(result["users"][0]["mode"], "both")
+        self.assertEqual(self.portal.db.execute(
+            "SELECT show_in_list FROM applications WHERE id=?", (applied["application_id"],)
+        ).fetchone()[0], 0)
         self.portal.presence(dict(body, state="offline"))
         self.assertFalse(self.portal.seamless_presence)
 
@@ -169,8 +178,8 @@ class PortalTests(unittest.TestCase):
         self.portal.db.commit()
         self.portal.presence({"application_id": applied["application_id"],
                               "application_token": applied["application_token"], "state": "online"})
-        with patch.object(server, "stats", side_effect=[{"total_users": 1},
-                {"users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}]):
+        with patch.object(server, "stats", return_value={
+                "users": [{"npid": "Hunter01", "title_name": "Bloodborne"}]}):
             result = self.portal.snapshot()
         self.assertEqual(result["online_players"], 1)
         self.assertEqual(result["listed_players"], 1)

@@ -139,12 +139,32 @@ def patch_relay_lifecycle(server):
     server.write_text(source, encoding="utf-8")
 
 
+def ensure_relay_lifecycle(server):
+    """Keep legacy images safe; use BBSC 0.0.2's bounded per-client writers.
+
+    Do not apply our old synchronous-broadcast patch to the 0.0.2 relay: its
+    queue, writer thread and slow-reader eviction replace that code entirely.
+    Fail closed if a later upstream source silently changes those guarantees.
+    """
+    source = server.read_text(encoding="utf-8")
+    modern = ("class RelayClient:", "RELAY_QUEUE_LIMIT = 512 * 1024",
+              "def _relay_forward(conn, payload):", "def _writer(self):",
+              "def _relay_unregister_client(conn):")
+    if all(marker in source for marker in modern):
+        return "bbsc-0.0.2"
+    if any(marker in source for marker in modern):
+        raise RuntimeError("BBSC 0.0.2 relay source is incomplete or changed")
+    patch_relay_lifecycle(server)
+    return "legacy-patched"
+
+
 def main():
     advertise = os.environ.get("SEAMLESS_ADVERTISE_IP", "127.0.0.1")
     script_dir = Path("/opt/bbsc/server/gameserver")
     configure(script_dir / "ss_info_template.xml", advertise)
     patch_region_response(script_dir / "bbsc_gameserver.py")
-    patch_relay_lifecycle(script_dir / "bbsc_gameserver.py")
+    relay_version = ensure_relay_lifecycle(script_dir / "bbsc_gameserver.py")
+    print(f"BBSC relay lifecycle: {relay_version}", flush=True)
     Path("/var/lib/bbsc").mkdir(parents=True, exist_ok=True)
     argv = [sys.executable, str(script_dir / "bbsc_gameserver.py"),
             "--shadnet", advertise, "--host", "0.0.0.0", "--advertise", advertise,
@@ -152,6 +172,8 @@ def main():
             "--bbhost-port", "0", "--bbhost-stun-port", "0", "--no-playlog",
             "--data", "/var/lib/bbsc/online-data.json",
             "--log-dir", "/var/lib/bbsc/logs"]
+    if relay_version == "bbsc-0.0.2":
+        argv.extend(("--relay-tcp-stats-interval", "60"))
     os.execv(sys.executable, argv)
 
 

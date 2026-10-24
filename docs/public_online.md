@@ -15,15 +15,17 @@ docker compose -f compose.localtest.yaml ps
 Invoke-RestMethod http://127.0.0.1:18080/v1/status
 ```
 
-预期返回 `ok: true`、`online_players: 0`、`users: []`。在线人数取自
-shadNet 已认证客户端；列表只展示已注册、勾选公开且没有设为隐身的账号。
+预期返回 `ok: true`、`online_players: 0`、`users: []`。在线人数与列表均按
+shadNet 已认证联机 ID 和经认证的 BBSC 在线心跳去重；所有在线账号都会显示
+联机 ID、昵称、模式和当前游戏。没有门户昵称的旧账号以联机 ID 代替。
+QQ、私网 IP、密码和申请凭据不会公开；此列表不是当前可加入的房间列表。
 
 本地测试栈会自动批准注册申请，正式 Tailscale 栈**不会**自动批准。
 可用以下示例走完整申请、查询、注册流程。请自行替换测试 QQ 号和密码，
 不要把真实密码或申请 token 贴到公开日志：
 
 ```powershell
-$application = Invoke-RestMethod http://127.0.0.1:18080/v1/apply -Method Post -ContentType 'application/json' -Body '{"qq":"123456789","nickname":"测试猎人","npid":"testhunter01","show_in_list":true}'
+$application = Invoke-RestMethod http://127.0.0.1:18080/v1/apply -Method Post -ContentType 'application/json' -Body '{"qq":"123456789","nickname":"测试猎人","npid":"testhunter01"}'
 $application.state
 $registration = Invoke-RestMethod http://127.0.0.1:18080/v1/register -Method Post -ContentType 'application/json' -Body (@{application_id=$application.application_id;application_token=$application.application_token;registration_key=$application.registration_key;password='ReplaceMe1234!'} | ConvertTo-Json)
 $registration.ok

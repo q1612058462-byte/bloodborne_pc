@@ -42,7 +42,6 @@ class TextureCache {
     // Default values for garbage collection
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
     static constexpr s64 DEFAULT_CRITICAL_GC_MEMORY = 3_GB;
-    static constexpr s64 TARGET_GC_THRESHOLD = 8_GB;
 
     using ImageIds = boost::container::small_vector<ImageId, 16>;
 
@@ -420,6 +419,8 @@ private:
     /// bbport: gc_tick at each of the last 64 seconds (GarbageCollectImages).
     std::array<u64, 64> gc_tick_at_second{};
     u64 gc_second = 0;
+    u64 gc_status_report_second = 0;
+    u64 gc_budget_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;

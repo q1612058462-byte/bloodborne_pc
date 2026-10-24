@@ -14,17 +14,24 @@ volume. By default all five lab ports bind only to loopback: 32313/TCP,
 service and its 31313/31314/31315 ports are untouched. Never copy production
 volumes here or run `down -v` against production.
 
-The game API image checks out pinned BBSC source revision
-`315f76c38b1ca5843b082f93f47927a9193ad94a` during build; Docker must
-reach GitHub once. If upstream `main` moves, the hash check deliberately
-stops the build until the new source is reviewed. The upstream game API source is GPL-2.0-or-later. This
+The game API image checks out BBSC v0.0.2 at pinned source revision
+`4f11faf88b6ba658ebde6fe5fbefdadedba4fa41` during build; Docker must
+reach GitHub once. The hash check stops the build if the release tag does not
+resolve to the reviewed source. The upstream game API source is GPL-2.0-or-later. This
 server image does **not** bundle BBSC DLLs or game files. The optional
 v1.7.12+ Windows offline launcher bundles the verified BBport client mod only.
 
-The isolated API wrapper also bounds relay clients (128 concurrent sockets)
-and applies a three-second send timeout. A stalled peer is removed from the
-broadcast set so one blocked write cannot retain relay threads and exhaust the
-game API's file descriptors.
+For BBSC v0.0.2, the isolated API wrapper verifies the upstream queued relay
+implementation and enables 60-second relay statistics. It does not apply the
+old synchronous-broadcast patch to this release. The legacy source path keeps
+its existing 128-client limit and three-second send timeout.
+
+For a server whose old `bbport-bbsc-game-api:seamless-lab` image is already
+installed, `Dockerfile.game-api.upgrade` provides a no-apt migration path. It
+asserts the old source revision before fetching v0.0.2. Keep the old image,
+Compose file, and game-data volume snapshot until the new API passes a live
+two-player test; change only the isolated `game-api` service image, never the
+traditional or seamless shadNet containers.
 
 After Docker Desktop is running:
 

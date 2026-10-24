@@ -414,8 +414,7 @@ void Menu() {
         }
         ImGui::EndCombo();
     }
-    Hint("The language of this menu. The game's own language is set by the launcher "
-         "(BB_LANGUAGE).");
+    Hint("The language of this menu. Change the game's own language in its settings.");
 
     ImGui::Spacing();
     if (ImGui::Button(Tr("Close"))) {

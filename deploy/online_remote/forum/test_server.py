@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image
 
-from server import ApiError, Forum, Handler, MAX_USER_IMAGE_BYTES, prepare_images
+from server import ApiError, Forum, Handler, MAX_USER_IMAGE_BYTES, prepare_files, prepare_images, redact_log
 
 
 def sample_image():
@@ -74,9 +74,43 @@ class ForumTests(unittest.TestCase):
         with self.assertRaises(ApiError):
             prepare_images([{"mime": "image/svg+xml", "data": base64.b64encode(b"<svg/>").decode()}])
         with self.assertRaises(ApiError):
-            prepare_images([sample_image()] * 3)
+            prepare_images([sample_image()] * 7)
         with self.assertRaises(ApiError):
             prepare_images([{"mime": "image/png", "data": "not-base64"}])
+
+    def test_files_and_report_privacy(self):
+        hunter = self.forum.register("猎人甲", "hunter-password-123")
+        admin = self.forum.register("管理员", "admin-password-123")
+        self.forum.promote("管理员")
+        admin_token, _ = self.forum.new_session(admin)
+        moderator = self.forum.session(admin_token)
+        raw = {"name": "run.log", "data": base64.b64encode(b"error line\n").decode()}
+        first = self.forum.make_post("thread", hunter, "这里是足够长的问题内容。", [],
+                                     category="求助", title="日志附件测试", files=[raw])
+        self.assertEqual(len(self.forum.thread(first["id"], moderator)["files"]), 1)
+        file_id = self.forum.thread(first["id"], moderator)["files"][0]["id"]
+        with self.assertRaises(ApiError):
+            self.forum.file(file_id)
+        self.forum.moderate(moderator, "thread", first["id"], "approve")
+        self.assertEqual(self.forum.file(file_id)["data"], b"error line\n")
+        report = self.forum.make_report({"qq": "12345678", "version": "1.8.7", "exit_code": 23,
+            "summary": "Crash password=private", "tail": "C:\\Users\\Alice\\run.log\ntoken=secret\n12345678\nSTOP 23",
+            "files": [raw]})
+        public = self.forum.thread(report["id"])
+        self.assertEqual(report["status"], "visible")
+        self.assertNotIn("12345678", str(public))
+        self.assertNotIn("secret", public["body"])
+        self.assertNotIn("Alice", public["body"])
+        self.assertEqual(public["files"], [])
+        private = self.forum.thread(report["id"], moderator)
+        self.assertEqual(private["report_qq"], "12345678")
+        private_id = private["files"][0]["id"]
+        with self.assertRaises(ApiError):
+            self.forum.file(private_id)
+        self.assertEqual(self.forum.file(private_id, moderator)["data"], b"error line\n")
+        with self.assertRaises(ApiError):
+            prepare_files([{"name": "game.exe", "data": base64.b64encode(b"bad").decode()}])
+        self.assertIn("[已隐藏]", redact_log("password=secret"))
 
     def test_nickname_controls_and_image_quota(self):
         with self.assertRaises(ApiError):
@@ -139,6 +173,15 @@ class ForumTests(unittest.TestCase):
             self.assertEqual(status, 201)
             self.assertEqual(post["status"], "pending")
             self.assertEqual(call("/threads")[2]["threads"], [])
+            raw = {"name": "run.log", "data": base64.b64encode(b"STOP 23\n").decode()}
+            status, _, report = call("/reports", {"qq": "12345678", "version": "1.8.7",
+                "exit_code": 23, "summary": "STOP code 23", "tail": "password=private\nSTOP 23",
+                "files": [raw]}, {"Origin": ""})
+            self.assertEqual(status, 201)
+            public = call("/threads/" + str(report["id"]))[2]
+            self.assertNotIn("report_qq", public)
+            self.assertEqual(public["files"], [])
+            self.assertNotIn("private", public["body"])
         finally:
             httpd.shutdown()
             httpd.server_close()

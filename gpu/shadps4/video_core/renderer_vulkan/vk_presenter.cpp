@@ -24,6 +24,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <csetjmp>
 #include <cstring>
 #include <ctime>
@@ -131,6 +132,25 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+    hdr_output_requested = [] {
+        const char* value = std::getenv("BB_HDR_OUTPUT");
+        return value && value[0] == '1';
+    }();
+    if (hdr_output_requested) {
+        const auto setting = [](const char* name, float fallback, float low, float high) {
+            const char* value = std::getenv(name);
+            const float parsed = value ? std::strtof(value, nullptr) : fallback;
+            return std::clamp(std::isfinite(parsed) ? parsed : fallback, low, high);
+        };
+        hdr_peak_nits = setting("BB_HDR_PEAK", 1000.0f, 400.0f, 4000.0f);
+        hdr_paper_white_nits = setting("BB_HDR_PAPER_WHITE", 200.0f, 80.0f, 500.0f);
+        hdr_paper_white_nits = std::min(hdr_paper_white_nits, hdr_peak_nits);
+        hdr_output_active = swapchain.HasHDR() && window.IsHdrEnabled();
+        if (hdr_output_active) swapchain.SetHDR(true);
+        std::printf("HDR10 output: %s; peak %.0f nits, paper white %.0f nits\n",
+                    hdr_output_active ? "enabled" : "SDR fallback (check Windows HDR and display)",
+                    hdr_peak_nits, hdr_paper_white_nits);
+    }
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
 
@@ -152,8 +172,27 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
+    if (hdr_output_requested && swapchain.HasHDR())
+        hdr_pass.Create(device, vk::Format::eA2B10G10R10UnormPack32);
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
+}
+
+void Presenter::SetHDR(bool enable) {
+    if (hdr_output_requested) {
+        const bool active = swapchain.HasHDR() && window.IsHdrEnabled();
+        if (active != hdr_output_active) {
+            swapchain.SetHDR(active);
+            hdr_output_active = active;
+            std::printf("HDR10 output: %s after display state change\n",
+                        active ? "enabled" : "SDR fallback");
+        }
+        pp_settings.hdr = 0;
+        return;
+    }
+    if (!IsHDRSupported()) return;
+    swapchain.SetHDR(enable);
+    pp_settings.hdr = enable ? 1 : 0;
 }
 
 Presenter::~Presenter() {
@@ -213,8 +252,23 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
     VkResult result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
                                      &unsafe_image, &frame->allocation, nullptr);
+    if (result != VK_SUCCESS) {
+        // WITHIN_BUDGET is a policy check, not proof that the allocation will
+        // fail. Keep the present surface alive during transient VRAM pressure.
+        VmaAllocationCreateInfo fallback = alloc_info;
+        fallback.flags = 0;
+        result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &fallback,
+                                &unsafe_image, &frame->allocation, nullptr);
+    }
+    if (result != VK_SUCCESS) {
+        VmaAllocationCreateInfo fallback = alloc_info;
+        fallback.flags = 0;
+        fallback.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &fallback,
+                                &unsafe_image, &frame->allocation, nullptr);
+    }
     if (result != VK_SUCCESS) [[unlikely]] {
-        LOG_CRITICAL(Render_Vulkan, "Failed allocating texture with error {}",
+        LOG_CRITICAL(Render_Vulkan, "Failed allocating present frame with error {}",
                      vk::to_string(vk::Result{result}));
         UNREACHABLE();
     }
@@ -395,7 +449,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
-                                 fsr_settings, frame->is_hdr);
+                                 fsr_settings, frame->is_hdr && !hdr_output_requested);
 
     // Vulkan has no sRGB variant of the 10-bit format, so an A2R10G10B10Srgb buffer reaches
     // the post process pass still sRGB encoded and has to be decoded there instead.
@@ -506,6 +560,76 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     return frame;
 }
 
+void Presenter::RenderHdrFrame(vk::CommandBuffer cmdbuf, Frame* frame,
+                               vk::Image swapchain_image) {
+    const vk::Extent2D extent = swapchain.GetExtent();
+    SetExpectedGameSize(s32(extent.width), s32(extent.height));
+    const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    const bool overlay = BbOverlay::Visible();
+    const vk::ImageMemoryBarrier2 frame_pre{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = overlay ? vk::PipelineStageFlagBits2::eColorAttachmentOutput
+                                : vk::PipelineStageFlagBits2::eFragmentShader,
+        .dstAccessMask = overlay ? vk::AccessFlagBits2::eColorAttachmentRead |
+                                       vk::AccessFlagBits2::eColorAttachmentWrite
+                                 : vk::AccessFlagBits2::eShaderRead,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = overlay ? vk::ImageLayout::eColorAttachmentOptimal
+                             : vk::ImageLayout::eShaderReadOnlyOptimal,
+        .image = frame->image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &frame_pre});
+    if (overlay) {
+        BbOverlay::Render(cmdbuf, frame->image_view, {frame->width, frame->height});
+        const vk::ImageMemoryBarrier2 frame_read{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .image = frame->image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &frame_read});
+    }
+    const vk::ImageMemoryBarrier2 target_pre{
+        .srcStageMask = vk::PipelineStageFlagBits2::eNone,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .image = swapchain_image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &target_pre});
+    Frame target{};
+    target.image = swapchain_image;
+    target.image_view = swapchain.ImageView();
+    target.width = extent.width;
+    target.height = extent.height;
+    HostPasses::PostProcessingPass::Settings settings{};
+    settings.hdr = 2;
+    settings.peak_nits = hdr_peak_nits;
+    settings.paper_white_nits = hdr_paper_white_nits;
+    settings.highlight_strength = BbOverlay::CapturesInput() ? 0.0f : 1.0f;
+    hdr_pass.Render(cmdbuf, frame->image_view, {frame->width, frame->height}, target, settings);
+    const vk::ImageMemoryBarrier2 to_present{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eNone,
+        .dstAccessMask = vk::AccessFlagBits2::eNone,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::ePresentSrcKHR,
+        .image = swapchain_image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_present});
+}
+
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
     // Free the frame for reuse
     const auto free_frame = [&] {
@@ -550,7 +674,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         });
     }
 
-    {
+    if (hdr_output_active) {
+        RenderHdrFrame(cmdbuf, frame, swapchain_image);
+    } else {
         const vk::Extent2D extent = swapchain.GetExtent();
         SetExpectedGameSize(s32(extent.width), s32(extent.height));
         const vk::ImageSubresourceRange color_range{

@@ -3,12 +3,14 @@
  * does not disable keyboard/mouse input. BB_KEY_*, BB_MOUSE_* and BB_PAD_* select the mappings.
  *
  * Default keyboard layout:
- *   WASD left stick, arrow keys right stick, Space Cross, LShift Circle,
+ *   WASD left stick, LCtrl hold-to-walk, arrow keys right stick,
+ *   Space Cross, LShift Circle,
  *   E Square, Q Triangle, 1 L1, 3 R1, R L2, F R2, Z L3, C R3,
  *   Enter Options, Tab left touchpad, Backspace right touchpad,
  *   IJKL d-pad (I up, K down, J left, L right).
- * Mouse: motion is the right stick; left/right/middle are R1/L1/R3, side buttons Square/Triangle,
- * wheel is d-pad up/down. F10 releases or captures the pointer. */
+ * Mouse: optional 1.09 direct game camera; the legacy right-stick path remains available.
+ * Left/right/middle are R1/L1/R3, side buttons Square/Triangle, wheel is d-pad up/down.
+ * F10 releases or captures the pointer. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "gpu/bbgpu.h"
@@ -79,10 +81,13 @@ enum {
 
 typedef struct {
     SDL_Scancode move_up,move_down,move_left,move_right;
+    SDL_Scancode walk;
+    float walk_strength;
     SDL_Scancode look_up,look_down,look_left,look_right;
     SDL_Scancode cross,circle,square,triangle,l1,r1,l2,r2,l3,r3,options;
     SDL_Scancode dpad_up,dpad_down,dpad_left,dpad_right,touch_left,touch_right;
     uint32_t mouse[5],wheel_up,wheel_down;
+    struct { SDL_Scancode modifier,key; uint32_t action; } chord[2];
     PadAction pad[PAD_BINDING_COUNT];
     float mouse_sensitivity;
     int mouse_invert_y;
@@ -136,6 +141,11 @@ static void load_input(void) {
 #define KEY(field,name,fallback) input.field=input_key("BB_KEY_" name,SDL_SCANCODE_##fallback)
     KEY(move_up,"MOVE_UP",W); KEY(move_down,"MOVE_DOWN",S);
     KEY(move_left,"MOVE_LEFT",A); KEY(move_right,"MOVE_RIGHT",D);
+    KEY(walk,"WALK",LCTRL);
+    KEY(chord[0].modifier,"CHORD1_MOD",UNKNOWN);
+    KEY(chord[0].key,"CHORD1_KEY",UNKNOWN);
+    KEY(chord[1].modifier,"CHORD2_MOD",UNKNOWN);
+    KEY(chord[1].key,"CHORD2_KEY",UNKNOWN);
     KEY(look_up,"LOOK_UP",UP); KEY(look_down,"LOOK_DOWN",DOWN);
     KEY(look_left,"LOOK_LEFT",LEFT); KEY(look_right,"LOOK_RIGHT",RIGHT);
     KEY(cross,"CROSS",SPACE); KEY(circle,"CIRCLE",LSHIFT);
@@ -146,6 +156,12 @@ static void load_input(void) {
     KEY(dpad_left,"DPAD_LEFT",J); KEY(dpad_right,"DPAD_RIGHT",L);
     KEY(touch_left,"TOUCH_LEFT",TAB); KEY(touch_right,"TOUCH_RIGHT",BACKSPACE);
 #undef KEY
+    input.chord[0].action=input_action("BB_KEY_CHORD1_ACTION",0);
+    input.chord[1].action=input_action("BB_KEY_CHORD2_ACTION",0);
+    const char *walk_strength=getenv("BB_KEY_WALK_STRENGTH");
+    input.walk_strength=walk_strength ? strtof(walk_strength,NULL) : 0.45f;
+    if (!isfinite(input.walk_strength) || input.walk_strength<0.1f) input.walk_strength=0.1f;
+    if (input.walk_strength>0.9f) input.walk_strength=0.9f;
     input.mouse[0]=input_action("BB_MOUSE_LEFT",BTN_R1);
     input.mouse[1]=input_action("BB_MOUSE_RIGHT",BTN_L1);
     input.mouse[2]=input_action("BB_MOUSE_MIDDLE",BTN_R3);
@@ -177,6 +193,53 @@ static void load_input(void) {
 static uint64_t now_us(void) { return host_monotonic_ns()/1000u; }
 static uint8_t axis(int16_t v) { int x=(v+32768)>>8; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
 static uint8_t trigger(int16_t v) { int x=v>>7; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
+/* The game can end a sprint when a digital W -> W+A turn jumps 45 degrees in
+ * one sample. Rotate a sprinting keyboard stick over a few samples and keep it
+ * on the square gate: the game chooses run by the larger axis. Walking stays
+ * circular. Physical gamepad axes are never shaped. */
+typedef struct { double angle; uint64_t at; int active; } KeyboardTurnState;
+static KeyboardTurnState keyboard_turn;
+static void keyboard_move_at(PadData *d, int left, int right, int up, int down,
+                             int sprint, int walk, float walk_strength, uint64_t now,
+                             KeyboardTurnState *turn) {
+    const int x = !!right - !!left, y = !!down - !!up;
+    if (!(left || right || up || down)) { turn->active=0; return; }
+    if (!sprint || (!x && !y) || d->left_x!=128 || d->left_y!=128) {
+        turn->active=0;
+        const int magnitude=(int)lround((x && y ? 90.0 : 127.0) *
+                                        (walk && !sprint ? walk_strength : 1.0));
+        if (left || right) d->left_x=(uint8_t)(128+x*magnitude);
+        if (up || down) d->left_y=(uint8_t)(128+y*magnitude);
+        return;
+    }
+    const double pi=3.14159265358979323846;
+    const double target=atan2((double)y,(double)x);
+    if (turn->active) {
+        const double diff=atan2(sin(target-turn->angle),cos(target-turn->angle));
+        const double step=fmin((now>turn->at ? now-turn->at : 0)*900.0*pi/(180.0*1e6),pi/6.0);
+        if (fabs(diff)<170.0*pi/180.0 && fabs(diff)>step)
+            turn->angle+=copysign(step,diff);
+        else turn->angle=target;
+    } else turn->angle=target;
+    turn->active=1; turn->at=now;
+    const double cx=cos(turn->angle), cy=sin(turn->angle);
+    const double square=127.0/fmax(fabs(cx),fabs(cy));
+    const int shaped_x=(int)lround(cx*square), shaped_y=(int)lround(cy*square);
+    d->left_x=(uint8_t)(128+shaped_x);
+    d->left_y=(uint8_t)(128+shaped_y);
+}
+static void touch_click(PadData *d, int right);
+static void apply_keyboard_chords(PadData *d, const bool *keys, bool *consumed) {
+    for (size_t i=0;i<sizeof(input.chord)/sizeof(input.chord[0]);++i) {
+        const SDL_Scancode modifier=input.chord[i].modifier;
+        const SDL_Scancode key=input.chord[i].key;
+        if (!modifier || !key || modifier==key || !input.chord[i].action ||
+            !keys[modifier] || !keys[key] || consumed[key]) continue;
+        if (input.chord[i].action==BTN_TOUCHPAD) touch_click(d,0);
+        else d->buttons|=input.chord[i].action;
+        consumed[key]=true;
+    }
+}
 static uint16_t touch_axis(float v, int max) {
     return (uint16_t)(v<=0.0f ? 0 : v>=1.0f ? max : (int)(v*max+0.5f));
 }
@@ -284,8 +347,12 @@ static void sample_host(PadData *d) {
     d->timestamp=now_us();
     load_input();
     current_gamepad();
-    if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
+    if (bbgpu_overlay_captures_input()) {
+        keyboard_turn.active=0;
+        return; /* settings menu open: neutral input */
+    }
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
+    int move_left=0, move_right=0, move_up=0, move_down=0, walk=0;
     int forced_touch=-1,automatic_touch=0,motion_sampled=0;
     for (size_t pad_index=0;pad_index<gamepad_count;++pad_index) {
         SDL_Gamepad *g=gamepads[pad_index];
@@ -333,7 +400,9 @@ static void sample_host(PadData *d) {
         if (!d->touch_count) touch_click(d,0);
     }
     if (k) {
-#define PRESSED(field) k[input.field]
+        bool consumed[SDL_SCANCODE_COUNT]={0};
+        apply_keyboard_chords(d,k,consumed);
+#define PRESSED(field) (k[input.field] && !consumed[input.field])
         if (PRESSED(cross)) d->buttons|=BTN_CROSS;
         if (PRESSED(circle)) d->buttons|=BTN_CIRCLE;
         if (PRESSED(square)) d->buttons|=BTN_SQUARE;
@@ -351,10 +420,10 @@ static void sample_host(PadData *d) {
         if (PRESSED(dpad_right)) d->buttons|=BTN_RIGHT;
         if (PRESSED(touch_left)) touch_click(d,0);
         if (PRESSED(touch_right)) touch_click(d,1);
-        if (PRESSED(move_left) || PRESSED(move_right))
-            d->left_x=(uint8_t)(128-(PRESSED(move_left) ? 128 : 0)+(PRESSED(move_right) ? 127 : 0));
-        if (PRESSED(move_up) || PRESSED(move_down))
-            d->left_y=(uint8_t)(128-(PRESSED(move_up) ? 128 : 0)+(PRESSED(move_down) ? 127 : 0));
+        /* Chords suppress a key's ordinary button action, not movement. */
+        move_left=k[input.move_left]; move_right=k[input.move_right];
+        move_up=k[input.move_up]; move_down=k[input.move_down];
+        walk=input.walk && k[input.walk];
         if (PRESSED(look_left) || PRESSED(look_right))
             d->right_x=(uint8_t)(128-(PRESSED(look_left) ? 128 : 0)+(PRESSED(look_right) ? 127 : 0));
         if (PRESSED(look_up) || PRESSED(look_down))
@@ -367,15 +436,23 @@ static void sample_host(PadData *d) {
         for (int i=0;i<5;++i) if (mouse_buttons & (1u<<i)) d->buttons|=input.mouse[i];
         if (wheel>0) d->buttons|=input.wheel_up;
         if (wheel<0) d->buttons|=input.wheel_down;
-        if (mouse_x) {
+        /* Never synthesize a stick in direct-camera mode, even while locked.
+         * The game's lock-on camera consumes that stick continuously, so mouse
+         * motion here made the target/camera drift. Keyboard look keys and a
+         * physical right stick remain available for deliberate target changes. */
+        const int stick_look = !bbgpu_camera_direct();
+        if (mouse_x && stick_look) {
             int value=128+(int)(mouse_x*input.mouse_sensitivity);
             d->right_x=(uint8_t)(value<0 ? 0 : value>255 ? 255 : value);
         }
-        if (mouse_y) {
+        if (mouse_y && stick_look) {
             int value=128+(int)(mouse_y*input.mouse_sensitivity)*(input.mouse_invert_y ? -1 : 1);
             d->right_y=(uint8_t)(value<0 ? 0 : value>255 ? 255 : value);
         }
     }
+    keyboard_move_at(d,move_left,move_right,move_up,move_down,
+                     !!(d->buttons & BTN_CIRCLE),walk,input.walk_strength,
+                     d->timestamp,&keyboard_turn);
     if (d->buttons & BTN_L2) d->l2=255;
     if (d->buttons & BTN_R2) d->r2=255;
 }

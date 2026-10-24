@@ -18,6 +18,11 @@ public:
         float gamma = 1.0f;
         u32 hdr = 0;
         u32 srgb_input = 0;
+        float peak_nits = 1000.0f;
+        float paper_white_nits = 200.0f;
+        float highlight_strength = 1.0f;
+        float input_aspect = 1.0f;
+        float output_aspect = 1.0f;
     };
 
     void Create(vk::Device device, vk::Format surface_format);

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -742,16 +743,27 @@ void Instance::CollectPhysicalMemoryInfo() {
         // If memory budget is not supported, use the size of the heap as the budget.
         total_memory_budget += memory_props.memoryHeaps[i].size;
     }
+    total_local_memory = local_memory;
     if (!IsIntegrated()) {
-        // We reserve some memory for the system.
-        const u64 system_memory = std::min<u64>(total_memory_budget / 8, 1_GB);
-        total_memory_budget -= system_memory;
+        // The live VK_EXT_memory_budget figure already accounts for desktop use.
+        // A further 1 GiB reserve starved 4 GiB cards and kept GC permanently
+        // in its critical path. Keep a smaller guard only for larger NVIDIA GPUs.
+        if (total_memory_budget > 4_GB && driver_id == vk::DriverId::eNvidiaProprietary) {
+            const u64 reserve = std::min<u64>(total_memory_budget / 8, 512_MB);
+            total_memory_budget -= reserve;
+        }
+        std::printf("GPU memory: %llu MiB dedicated, %llu MiB startup budget\n",
+                    static_cast<unsigned long long>(total_local_memory >> 20),
+                    static_cast<unsigned long long>(total_memory_budget >> 20));
         return;
     }
     // Leave at least 8 GB for the system on integrated GPUs.
-    const s64 available_memory = static_cast<s64>(total_memory_budget - device_initial_usage);
+    const s64 available_memory = static_cast<s64>(total_memory_budget) -
+                                 static_cast<s64>(device_initial_usage);
     total_memory_budget =
         static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(local_memory)));
+    std::printf("GPU memory: integrated, %llu MiB shared startup budget\n",
+                static_cast<unsigned long long>(total_memory_budget >> 20));
 }
 
 void Instance::CollectImageFormatInfo() {

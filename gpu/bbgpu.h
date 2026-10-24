@@ -41,6 +41,13 @@ int bbgpu_overlay_captures_input(void);
  * mouse (relative mode); dx/dy and wheel are consumed, buttons is the current SDL button mask.
  * F10 toggles capture, and the overlay/text input/focus loss releases it automatically. */
 int bbgpu_mouse_read(int32_t *dx, int32_t *dy, int32_t *wheel, uint32_t *buttons);
+/* Windows Bloodborne 1.09: direct mouse camera. Install before guest entry.
+ * If signatures differ, returns 0 and the existing right-stick path remains intact. */
+int bbgpu_camera_install(void *image, uint64_t image_size);
+int bbgpu_camera_direct(void);
+int bbgpu_camera_locked(void);
+void bbgpu_camera_motion(int32_t dx, int32_t dy);
+void bbgpu_camera_clear_motion(void);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 #ifdef __cplusplus
