@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Compile with BbportPortable.cs and /main:BbportPortable.GameDirectoryFinderTests.
 using System;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Windows.Forms;
 
 namespace BbportPortable {
 static class GameDirectoryFinderTests {
@@ -24,6 +26,7 @@ static class GameDirectoryFinderTests {
         File.WriteAllBytes(Path.Combine(directory, "sce_sys", "param.sfo"), sfo);
     }
 
+    [STAThread]
     public static int Main() {
         string root = Path.Combine(Path.GetTempPath(), "bbport-game-finder-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -50,7 +53,26 @@ static class GameDirectoryFinderTests {
             Require(LauncherPalette.Canvas != light, "The two themes should use distinct surfaces.");
             Require(LauncherPalette.AccentText != LauncherPalette.Text,
                 "Dark accent buttons should have their own readable text colour.");
-            Console.WriteLine("Game directory search and palette tests passed.");
+            ComboBox picker = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            picker.Items.AddRange(new object[] { new Choice("亮色", "light"), new Choice("暗色", "dark") });
+            picker.SelectedIndex = 0;
+            using (LauncherComboHost host = new LauncherComboHost(picker, 38)) {
+                host.Width = 360;
+                host.RefreshTheme();
+                Require(picker.Parent == host && host.Controls.Count == 2,
+                    "Modern dropdown must retain the real ComboBox and a separate visible arrow.");
+                picker.SelectedIndex = 1;
+                Require(((Choice)picker.SelectedItem).Value == "dark",
+                    "Modern dropdown must preserve existing selection semantics.");
+                Require(picker.Width > 250, "Dropdown should have a full-width click target.");
+                using (Bitmap preview = new Bitmap(host.Width, host.Height))
+                    host.DrawToBitmap(preview, new Rectangle(0, 0, preview.Width, preview.Height));
+                LauncherPalette.Dark = false;
+                host.RefreshTheme();
+                Require(picker.BackColor == LauncherPalette.Input,
+                    "Changing theme should update dropdown and selected text surfaces.");
+            }
+            Console.WriteLine("Game directory search, palette and dropdown tests passed.");
             return 0;
         } finally {
             if (Directory.Exists(root) && Path.GetFileName(root).StartsWith("bbport-game-finder-test-"))

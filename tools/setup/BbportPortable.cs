@@ -56,22 +56,135 @@ sealed class Choice {
 
 static class LauncherPalette {
     public static bool Dark;
-    public static Color Canvas { get { return Dark ? Color.FromArgb(23, 28, 34) : Color.FromArgb(248, 246, 243); } }
-    public static Color Surface { get { return Dark ? Color.FromArgb(35, 42, 50) : Color.White; } }
-    public static Color Sidebar { get { return Dark ? Color.FromArgb(29, 36, 44) : Color.FromArgb(241, 236, 230); } }
-    public static Color Input { get { return Dark ? Color.FromArgb(43, 52, 62) : Color.White; } }
+    public static Color Canvas { get { return Dark ? Color.FromArgb(20, 26, 32) : Color.FromArgb(241, 244, 246); } }
+    public static Color Surface { get { return Dark ? Color.FromArgb(32, 41, 50) : Color.FromArgb(250, 252, 253); } }
+    public static Color Sidebar { get { return Dark ? Color.FromArgb(26, 35, 44) : Color.FromArgb(233, 239, 243); } }
+    public static Color Input { get { return Dark ? Color.FromArgb(42, 52, 62) : Color.FromArgb(255, 255, 255); } }
     public static Color Text { get { return TextFor(Dark); } }
     public static Color Muted { get { return MutedFor(Dark); } }
     public static Color Accent { get { return Dark ? Color.FromArgb(217, 177, 123) : Color.FromArgb(122, 48, 51); } }
     public static Color AccentHover { get { return Dark ? Color.FromArgb(237, 199, 149) : Color.FromArgb(149, 61, 65); } }
     public static Color AccentText { get { return Dark ? Color.FromArgb(25, 30, 36) : Color.White; } }
-    public static Color Border { get { return Dark ? Color.FromArgb(109, 123, 137) : Color.FromArgb(158, 143, 133); } }
-    public static Color Hover { get { return Dark ? Color.FromArgb(59, 69, 80) : Color.FromArgb(239, 230, 221); } }
+    public static Color Border { get { return Dark ? Color.FromArgb(91, 110, 127) : Color.FromArgb(182, 196, 205); } }
+    public static Color Hover { get { return Dark ? Color.FromArgb(59, 72, 84) : Color.FromArgb(230, 237, 241); } }
     public static Color TextFor(bool dark) { return dark ? Color.FromArgb(240, 239, 236) : Color.FromArgb(43, 43, 47); }
     public static Color MutedFor(bool dark) { return dark ? Color.FromArgb(193, 196, 198) : Color.FromArgb(100, 96, 94); }
     public static Color Success(bool dark) { return dark ? Color.FromArgb(112, 214, 171) : Color.FromArgb(35, 119, 84); }
     public static Color Warning(bool dark) { return dark ? Color.FromArgb(255, 190, 109) : Color.FromArgb(174, 96, 31); }
     public static Color Danger(bool dark) { return dark ? Color.FromArgb(255, 132, 137) : Color.FromArgb(170, 53, 54); }
+}
+
+static class LauncherShape {
+    public static GraphicsPath Rounded(RectangleF bounds, float radius) {
+        GraphicsPath path = new GraphicsPath();
+        float d = Math.Min(radius * 2f, Math.Min(bounds.Width, bounds.Height));
+        path.AddArc(bounds.Left, bounds.Top, d, d, 180, 90);
+        path.AddArc(bounds.Right - d, bounds.Top, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
+// Keep the real ComboBox for keyboard navigation and existing SelectedIndexChanged
+// handlers. The host supplies a visible, full-height dropdown affordance.
+sealed class LauncherComboHost : Panel {
+    readonly ComboBox combo;
+    readonly Panel arrow;
+    bool hot;
+    bool focused;
+
+    public LauncherComboHost(ComboBox value, int height) {
+        combo = value;
+        Height = height;
+        DoubleBuffered = true;
+        ResizeRedraw = true;
+        Cursor = Cursors.Hand;
+        combo.FlatStyle = FlatStyle.Flat;
+        combo.DrawMode = DrawMode.OwnerDrawFixed;
+        combo.ItemHeight = Math.Max(23, height - 10);
+        combo.DrawItem += DrawChoice;
+        combo.Enter += delegate { focused = true; Invalidate(); arrow.Invalidate(); };
+        combo.Leave += delegate { focused = false; Invalidate(); arrow.Invalidate(); };
+        combo.DropDown += delegate { focused = true; Invalidate(); arrow.Invalidate(); };
+        combo.DropDownClosed += delegate { focused = combo.Focused; Invalidate(); arrow.Invalidate(); };
+        combo.MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
+        combo.MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
+        arrow = new Panel { Cursor = Cursors.Hand };
+        arrow.Paint += PaintArrow;
+        arrow.Click += delegate { OpenDropDown(); };
+        arrow.MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
+        arrow.MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
+        Controls.Add(combo);
+        Controls.Add(arrow);
+        Click += delegate { OpenDropDown(); };
+        MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
+        MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
+        Resize += delegate { LayoutChildren(); };
+        LayoutChildren();
+    }
+
+    void LayoutChildren() {
+        int side = Math.Max(34, Height - 4);
+        arrow.SetBounds(Math.Max(0, Width - side - 5), 3, side, Math.Max(0, Height - 6));
+        int textHeight = combo.PreferredHeight;
+        combo.SetBounds(9, Math.Max(2, (Height - textHeight) / 2),
+            Math.Max(40, Width - 16), textHeight);
+        arrow.BringToFront(); // Cover the tiny native arrow without hiding the selected text.
+    }
+
+    void OpenDropDown() {
+        if (!combo.Enabled || combo.Items.Count == 0) return;
+        combo.Focus();
+        combo.DroppedDown = true;
+    }
+
+    void DrawChoice(object sender, DrawItemEventArgs e) {
+        if (e.Index < 0 || e.Index >= combo.Items.Count) return;
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        using (Brush fill = new SolidBrush(selected ? LauncherPalette.Hover : LauncherPalette.Input))
+            e.Graphics.FillRectangle(fill, e.Bounds);
+        Rectangle textBounds = new Rectangle(e.Bounds.X + 8, e.Bounds.Y,
+            Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, combo.Items[e.Index].ToString(), combo.Font, textBounds,
+            LauncherPalette.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    void PaintArrow(object sender, PaintEventArgs e) {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(LauncherPalette.Input);
+        Color tint = focused || hot ? LauncherPalette.Accent : LauncherPalette.Text;
+        int x = arrow.Width / 2;
+        int y = arrow.Height / 2;
+        using (Pen pen = new Pen(tint, 2.2f)) {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            g.DrawLines(pen, new Point[] {
+                new Point(x - 6, y - 2), new Point(x, y + 4), new Point(x + 6, y - 2) });
+        }
+        using (Pen divider = new Pen(LauncherPalette.Border, 1f))
+            g.DrawLine(divider, 0, 8, 0, Math.Max(8, arrow.Height - 8));
+    }
+
+    protected override void OnPaint(PaintEventArgs e) {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF bounds = new RectangleF(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
+        using (GraphicsPath path = LauncherShape.Rounded(bounds, 9f))
+        using (Pen border = new Pen(focused ? LauncherPalette.Accent :
+            hot ? LauncherPalette.AccentHover : LauncherPalette.Border, focused ? 2f : 1.2f))
+            e.Graphics.DrawPath(border, path);
+    }
+
+    public void RefreshTheme() {
+        BackColor = LauncherPalette.Input;
+        arrow.BackColor = LauncherPalette.Input;
+        combo.BackColor = LauncherPalette.Input;
+        combo.ForeColor = LauncherPalette.Text;
+        Invalidate(true);
+    }
 }
 
 // The visual shell stays in WinForms so the portable launcher needs no WebView runtime.
@@ -113,13 +226,37 @@ sealed class LauncherCard : GroupBox {
     protected override void OnPaint(PaintEventArgs e) {
         if (Width <= 0 || Height <= 0) return;
         Graphics g = e.Graphics;
-        g.Clear(BackColor);
-        using (Pen border = new Pen(LauncherPalette.Border, 1.5f))
-            g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Parent == null ? LauncherPalette.Canvas : Parent.BackColor);
+        RectangleF bounds = new RectangleF(2, 2, Width - 5, Height - 5);
+        using (GraphicsPath shape = LauncherShape.Rounded(bounds, 13f)) {
+            Color top = LauncherPalette.Dark ? Color.FromArgb(43, 55, 65) : Color.White;
+            using (Brush glass = new LinearGradientBrush(ClientRectangle,
+                top, LauncherPalette.Surface, LinearGradientMode.Vertical))
+                g.FillPath(glass, shape);
+            using (Pen edge = new Pen(LauncherPalette.Border, 1f))
+                g.DrawPath(edge, shape);
+        }
         using (Brush accent = new SolidBrush(LauncherPalette.Accent))
-            g.FillRectangle(accent, 0, 0, 4, Height);
-        TextRenderer.DrawText(g, Text, Font, new Rectangle(16, 8, Math.Max(0, Width - 28), 24),
-            ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            g.FillRectangle(accent, 3, 15, 3, 19);
+        using (Font title = new Font(Font, FontStyle.Bold))
+            TextRenderer.DrawText(g, Text, title, new Rectangle(18, 8, Math.Max(0, Width - 30), 27),
+                ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        using (Pen divider = new Pen(LauncherPalette.Border, 0.7f))
+            g.DrawLine(divider, 17, 39, Math.Max(17, Width - 18), 39);
+    }
+}
+
+sealed class LauncherGlassBar : Panel {
+    public LauncherGlassBar() { DoubleBuffered = true; ResizeRedraw = true; }
+    protected override void OnPaint(PaintEventArgs e) {
+        if (Width < 1 || Height < 1) return;
+        Color light = LauncherPalette.Dark ? Color.FromArgb(44, 56, 67) : Color.White;
+        using (Brush glass = new LinearGradientBrush(ClientRectangle, light,
+            LauncherPalette.Surface, LinearGradientMode.Vertical))
+            e.Graphics.FillRectangle(glass, ClientRectangle);
+        using (Pen hairline = new Pen(LauncherPalette.Border, 1f))
+            e.Graphics.DrawLine(hairline, 0, Height - 1, Width, Height - 1);
     }
 }
 
@@ -1828,7 +1965,7 @@ sealed class MainForm : Form {
         bottom.Controls.Add(progress);
         bottom.Controls.Add(buttons);
         Panel content = new Panel { Dock = DockStyle.Fill, Tag = "canvas", BackColor = ThemeCanvas };
-        Panel pageHeader = new Panel { Dock = DockStyle.Top, Height = S(72), Tag = "surface",
+        Panel pageHeader = new LauncherGlassBar { Dock = DockStyle.Top, Height = S(72), Tag = "surface",
             BackColor = LauncherPalette.Surface,
             Padding = new Padding(S(22), S(10), S(18), S(8)) };
         pageHeading = new Label { AutoSize = true, Location = new Point(S(22), S(10)),
@@ -1910,6 +2047,8 @@ sealed class MainForm : Form {
             bool active = item.Key == selected;
             item.Value.BackColor = active ? ThemeGold : ThemeSidebar;
             item.Value.ForeColor = active ? LauncherPalette.AccentText : ThemeText;
+            item.Value.FlatAppearance.BorderSize = 0;
+            item.Value.Padding = new Padding(S(12), 0, S(4), 0);
             item.Value.FlatAppearance.MouseOverBackColor = active ? LauncherPalette.AccentHover : LauncherPalette.Hover;
         }
         Button current;
@@ -1952,7 +2091,8 @@ sealed class MainForm : Form {
                 control.ForeColor = ThemeGold;
                 control.Invalidate();
             } else if (control is TableLayoutPanel || control is FlowLayoutPanel)
-                control.BackColor = control.Parent.BackColor;
+                control.BackColor = control.Parent is LauncherCard ? Color.Transparent : control.Parent.BackColor;
+            if (control is LauncherComboHost) ((LauncherComboHost)control).RefreshTheme();
             if (control is Button && !(control.Tag is TabPage)) {
                 Button button = (Button)control;
                 button.FlatStyle = FlatStyle.Flat;
@@ -1962,8 +2102,8 @@ sealed class MainForm : Form {
                 button.BackColor = LauncherPalette.Surface;
                 button.ForeColor = ThemeText;
                 button.Cursor = Cursors.Hand;
-                button.Padding = new Padding(S(8), S(4), S(8), S(4));
-                button.Margin = new Padding(S(3));
+                button.Padding = new Padding(S(10), S(5), S(10), S(5));
+                button.Margin = new Padding(S(4));
             } else if (control is TextBox || control is RichTextBox || control is ComboBox ||
                 control is NumericUpDown || control is ListView) {
                 control.BackColor = ThemeInput;
@@ -2047,10 +2187,10 @@ sealed class MainForm : Form {
     TableLayoutPanel Group(string title, int columns) {
         GroupBox box = new LauncherCard { Text = title, Dock = DockStyle.Top, AutoSize = true,
             BackColor = LauncherPalette.Surface, ForeColor = ThemeGold,
-            Padding = new Padding(S(16), S(22), S(16), S(14)),
-            AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(12)) };
+            Padding = new Padding(S(18), S(43), S(18), S(16)),
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, S(14)) };
         TableLayoutPanel grid = new TableLayoutPanel { ColumnCount = columns, Dock = DockStyle.Fill, AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Color.Transparent };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         if (columns > 2) grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -2071,10 +2211,14 @@ sealed class MainForm : Form {
     }
 
     ComboBox Combo(TableLayoutPanel grid, string label, Choice[] choices) {
-        ComboBox combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = S(320), Anchor = AnchorStyles.Left };
+        ComboBox combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         combo.Items.AddRange(choices);
         combo.SelectedIndex = 0;
-        AddRow(grid, label, combo, null);
+        LauncherComboHost host = new LauncherComboHost(combo, S(38)) {
+            Width = S(360), Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, S(4), S(5), S(4)) };
+        host.RefreshTheme();
+        AddRow(grid, label, host, null);
         return combo;
     }
 
