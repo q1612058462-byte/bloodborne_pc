@@ -13,6 +13,16 @@ static class GameDirectoryFinderTests {
         if (!condition) throw new Exception(message);
     }
 
+    static LauncherPages FindPages(Control root) {
+        LauncherPages pages = root as LauncherPages;
+        if (pages != null) return pages;
+        foreach (Control child in root.Controls) {
+            pages = FindPages(child);
+            if (pages != null) return pages;
+        }
+        return null;
+    }
+
     static void WriteGame(string directory, string titleId) {
         Directory.CreateDirectory(Path.Combine(directory, "sce_sys"));
         File.WriteAllBytes(Path.Combine(directory, "eboot.bin"), new byte[] { 0x7f, 0x45, 0x4c, 0x46 });
@@ -60,7 +70,9 @@ static class GameDirectoryFinderTests {
                 host.Width = 360;
                 host.RefreshTheme();
                 Require(picker.Parent == host && host.Controls.Count == 2,
-                    "Modern dropdown must retain the real ComboBox and a separate visible arrow.");
+                    "Modern dropdown must retain the real ComboBox and a separate visual face.");
+                Require(host.Controls[0] != picker,
+                    "The dark dropdown must cover the native control's bright frame.");
                 picker.SelectedIndex = 1;
                 Require(((Choice)picker.SelectedItem).Value == "dark",
                     "Modern dropdown must preserve existing selection semantics.");
@@ -72,7 +84,29 @@ static class GameDirectoryFinderTests {
                 Require(picker.BackColor == LauncherPalette.Input,
                     "Changing theme should update dropdown and selected text surfaces.");
             }
-            Console.WriteLine("Game directory search, palette and dropdown tests passed.");
+            using (LauncherPages pages = new LauncherPages()) {
+                LauncherPage first = new LauncherPage("first");
+                LauncherPage secondPage = new LauncherPage("second");
+                pages.AddPage(first);
+                pages.AddPage(secondPage);
+                int changed = 0;
+                pages.SelectedIndexChanged += delegate { changed++; };
+                pages.SelectedTab = secondPage;
+                Require(pages.SelectedTab == secondPage && changed == 1 &&
+                    secondPage.Parent == pages && !first.Visible,
+                    "Custom page router should select a page without a native TabControl frame.");
+            }
+            using (MainForm form = new MainForm(null)) {
+                LauncherPages pages = FindPages(form);
+                Require(pages != null && pages.TabPages.Count == 13 && pages.SelectedTab != null,
+                    "The complete launcher should build all thirteen pages in the borderless router.");
+                LauncherPage home = pages.SelectedTab;
+                pages.SelectedTab = pages.TabPages[9];
+                Require(pages.SelectedTab == pages.TabPages[9],
+                    "The launcher sidebar must still be able to switch pages.");
+                pages.SelectedTab = home;
+            }
+            Console.WriteLine("Game directory search, palette, dropdown and page router tests passed.");
             return 0;
         } finally {
             if (Directory.Exists(root) && Path.GetFileName(root).StartsWith("bbport-game-finder-test-"))

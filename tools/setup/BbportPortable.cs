@@ -56,19 +56,21 @@ sealed class Choice {
 
 static class LauncherPalette {
     public static bool Dark;
-    public static Color Canvas { get { return Dark ? Color.FromArgb(20, 26, 32) : Color.FromArgb(241, 244, 246); } }
-    public static Color Surface { get { return Dark ? Color.FromArgb(32, 41, 50) : Color.FromArgb(250, 252, 253); } }
-    public static Color Sidebar { get { return Dark ? Color.FromArgb(26, 35, 44) : Color.FromArgb(233, 239, 243); } }
-    public static Color Input { get { return Dark ? Color.FromArgb(42, 52, 62) : Color.FromArgb(255, 255, 255); } }
+    public static Color Canvas { get { return Dark ? Color.FromArgb(15, 18, 23) : Color.FromArgb(241, 244, 246); } }
+    public static Color Surface { get { return Dark ? Color.FromArgb(25, 29, 35) : Color.FromArgb(250, 252, 253); } }
+    public static Color Sidebar { get { return Dark ? Color.FromArgb(17, 21, 27) : Color.FromArgb(233, 239, 243); } }
+    public static Color Input { get { return Dark ? Color.FromArgb(36, 42, 50) : Color.FromArgb(255, 255, 255); } }
     public static Color Text { get { return TextFor(Dark); } }
     public static Color Muted { get { return MutedFor(Dark); } }
     public static Color Accent { get { return Dark ? Color.FromArgb(217, 177, 123) : Color.FromArgb(122, 48, 51); } }
     public static Color AccentHover { get { return Dark ? Color.FromArgb(237, 199, 149) : Color.FromArgb(149, 61, 65); } }
     public static Color AccentText { get { return Dark ? Color.FromArgb(25, 30, 36) : Color.White; } }
-    public static Color Border { get { return Dark ? Color.FromArgb(91, 110, 127) : Color.FromArgb(182, 196, 205); } }
-    public static Color Hover { get { return Dark ? Color.FromArgb(59, 72, 84) : Color.FromArgb(230, 237, 241); } }
-    public static Color TextFor(bool dark) { return dark ? Color.FromArgb(240, 239, 236) : Color.FromArgb(43, 43, 47); }
-    public static Color MutedFor(bool dark) { return dark ? Color.FromArgb(193, 196, 198) : Color.FromArgb(100, 96, 94); }
+    public static Color Action { get { return Dark ? Color.FromArgb(151, 48, 49) : Accent; } }
+    public static Color ActionHover { get { return Dark ? Color.FromArgb(176, 61, 59) : AccentHover; } }
+    public static Color Border { get { return Dark ? Color.FromArgb(68, 79, 90) : Color.FromArgb(182, 196, 205); } }
+    public static Color Hover { get { return Dark ? Color.FromArgb(44, 50, 58) : Color.FromArgb(230, 237, 241); } }
+    public static Color TextFor(bool dark) { return dark ? Color.FromArgb(240, 235, 225) : Color.FromArgb(43, 43, 47); }
+    public static Color MutedFor(bool dark) { return dark ? Color.FromArgb(171, 177, 182) : Color.FromArgb(100, 96, 94); }
     public static Color Success(bool dark) { return dark ? Color.FromArgb(112, 214, 171) : Color.FromArgb(35, 119, 84); }
     public static Color Warning(bool dark) { return dark ? Color.FromArgb(255, 190, 109) : Color.FromArgb(174, 96, 31); }
     public static Color Danger(bool dark) { return dark ? Color.FromArgb(255, 132, 137) : Color.FromArgb(170, 53, 54); }
@@ -91,7 +93,7 @@ static class LauncherShape {
 // handlers. The host supplies a visible, full-height dropdown affordance.
 sealed class LauncherComboHost : Panel {
     readonly ComboBox combo;
-    readonly Panel arrow;
+    readonly Panel face;
     bool hot;
     bool focused;
 
@@ -105,33 +107,32 @@ sealed class LauncherComboHost : Panel {
         combo.DrawMode = DrawMode.OwnerDrawFixed;
         combo.ItemHeight = Math.Max(23, height - 10);
         combo.DrawItem += DrawChoice;
-        combo.Enter += delegate { focused = true; Invalidate(); arrow.Invalidate(); };
-        combo.Leave += delegate { focused = false; Invalidate(); arrow.Invalidate(); };
-        combo.DropDown += delegate { focused = true; Invalidate(); arrow.Invalidate(); };
-        combo.DropDownClosed += delegate { focused = combo.Focused; Invalidate(); arrow.Invalidate(); };
-        combo.MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
-        combo.MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
-        arrow = new Panel { Cursor = Cursors.Hand };
-        arrow.Paint += PaintArrow;
-        arrow.Click += delegate { OpenDropDown(); };
-        arrow.MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
-        arrow.MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
+        combo.SelectedIndexChanged += delegate { face.Invalidate(); };
+        combo.Enter += delegate { focused = true; Invalidate(); face.Invalidate(); };
+        combo.Leave += delegate { focused = false; Invalidate(); face.Invalidate(); };
+        combo.DropDown += delegate { focused = true; Invalidate(); face.Invalidate(); };
+        combo.DropDownClosed += delegate { focused = combo.Focused; Invalidate(); face.Invalidate(); };
+        face = new Panel { Cursor = Cursors.Hand };
+        face.Paint += PaintFace;
+        face.Click += delegate { OpenDropDown(); };
+        face.MouseEnter += delegate { hot = true; Invalidate(); face.Invalidate(); };
+        face.MouseLeave += delegate { hot = false; Invalidate(); face.Invalidate(); };
         Controls.Add(combo);
-        Controls.Add(arrow);
+        Controls.Add(face);
         Click += delegate { OpenDropDown(); };
-        MouseEnter += delegate { hot = true; Invalidate(); arrow.Invalidate(); };
-        MouseLeave += delegate { hot = false; Invalidate(); arrow.Invalidate(); };
+        MouseEnter += delegate { hot = true; Invalidate(); face.Invalidate(); };
+        MouseLeave += delegate { hot = false; Invalidate(); face.Invalidate(); };
         Resize += delegate { LayoutChildren(); };
         LayoutChildren();
     }
 
     void LayoutChildren() {
-        int side = Math.Max(34, Height - 4);
-        arrow.SetBounds(Math.Max(0, Width - side - 5), 3, side, Math.Max(0, Height - 6));
         int textHeight = combo.PreferredHeight;
-        combo.SetBounds(9, Math.Max(2, (Height - textHeight) / 2),
-            Math.Max(40, Width - 16), textHeight);
-        arrow.BringToFront(); // Cover the tiny native arrow without hiding the selected text.
+        combo.SetBounds(3, Math.Max(2, (Height - textHeight) / 2),
+            Math.Max(40, Width - 6), textHeight);
+        combo.DropDownWidth = Math.Max(40, Width - 6);
+        face.SetBounds(4, 4, Math.Max(1, Width - 8), Math.Max(1, Height - 8));
+        face.BringToFront(); // The native selector stays functional but cannot paint white theme edges.
     }
 
     void OpenDropDown() {
@@ -151,13 +152,18 @@ sealed class LauncherComboHost : Panel {
             LauncherPalette.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
-    void PaintArrow(object sender, PaintEventArgs e) {
+    void PaintFace(object sender, PaintEventArgs e) {
         Graphics g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(LauncherPalette.Input);
+        string selected = combo.SelectedItem == null ? "请选择…" : combo.SelectedItem.ToString();
+        TextRenderer.DrawText(g, selected, combo.Font,
+            new Rectangle(10, 0, Math.Max(0, face.Width - 51), face.Height),
+            combo.Enabled ? LauncherPalette.Text : LauncherPalette.Muted,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         Color tint = focused || hot ? LauncherPalette.Accent : LauncherPalette.Text;
-        int x = arrow.Width / 2;
-        int y = arrow.Height / 2;
+        int x = face.Width - 19;
+        int y = face.Height / 2;
         using (Pen pen = new Pen(tint, 2.2f)) {
             pen.StartCap = LineCap.Round;
             pen.EndCap = LineCap.Round;
@@ -165,7 +171,7 @@ sealed class LauncherComboHost : Panel {
                 new Point(x - 6, y - 2), new Point(x, y + 4), new Point(x + 6, y - 2) });
         }
         using (Pen divider = new Pen(LauncherPalette.Border, 1f))
-            g.DrawLine(divider, 0, 8, 0, Math.Max(8, arrow.Height - 8));
+            g.DrawLine(divider, face.Width - 39, 6, face.Width - 39, Math.Max(6, face.Height - 6));
     }
 
     protected override void OnPaint(PaintEventArgs e) {
@@ -180,7 +186,7 @@ sealed class LauncherComboHost : Panel {
 
     public void RefreshTheme() {
         BackColor = LauncherPalette.Input;
-        arrow.BackColor = LauncherPalette.Input;
+        face.BackColor = LauncherPalette.Input;
         combo.BackColor = LauncherPalette.Input;
         combo.ForeColor = LauncherPalette.Text;
         Invalidate(true);
@@ -230,7 +236,7 @@ sealed class LauncherCard : GroupBox {
         g.Clear(Parent == null ? LauncherPalette.Canvas : Parent.BackColor);
         RectangleF bounds = new RectangleF(2, 2, Width - 5, Height - 5);
         using (GraphicsPath shape = LauncherShape.Rounded(bounds, 13f)) {
-            Color top = LauncherPalette.Dark ? Color.FromArgb(43, 55, 65) : Color.White;
+            Color top = LauncherPalette.Dark ? Color.FromArgb(33, 39, 46) : Color.White;
             using (Brush glass = new LinearGradientBrush(ClientRectangle,
                 top, LauncherPalette.Surface, LinearGradientMode.Vertical))
                 g.FillPath(glass, shape);
@@ -251,12 +257,51 @@ sealed class LauncherGlassBar : Panel {
     public LauncherGlassBar() { DoubleBuffered = true; ResizeRedraw = true; }
     protected override void OnPaint(PaintEventArgs e) {
         if (Width < 1 || Height < 1) return;
-        Color light = LauncherPalette.Dark ? Color.FromArgb(44, 56, 67) : Color.White;
+        Color light = LauncherPalette.Dark ? Color.FromArgb(31, 37, 44) : Color.White;
         using (Brush glass = new LinearGradientBrush(ClientRectangle, light,
             LauncherPalette.Surface, LinearGradientMode.Vertical))
             e.Graphics.FillRectangle(glass, ClientRectangle);
         using (Pen hairline = new Pen(LauncherPalette.Border, 1f))
             e.Graphics.DrawLine(hairline, 0, Height - 1, Width, Height - 1);
+    }
+}
+
+sealed class LauncherPage : Panel {
+    public LauncherPage(string title) { Text = title; DoubleBuffered = true; }
+}
+
+// The navigation is already custom; the native TabControl used only as a page
+// container painted a bright themed frame around dark pages on Windows.
+sealed class LauncherPages : Panel {
+    public readonly List<LauncherPage> TabPages = new List<LauncherPage>();
+    LauncherPage selected;
+    public event EventHandler SelectedIndexChanged;
+
+    public LauncherPages() { DoubleBuffered = true; }
+
+    public void AddPage(LauncherPage page) {
+        if (page == null || TabPages.Contains(page)) throw new ArgumentException("Invalid page.");
+        TabPages.Add(page);
+        page.Dock = DockStyle.Fill;
+        page.Visible = false;
+        Controls.Add(page);
+        if (selected == null) SelectedTab = page;
+    }
+
+    public LauncherPage SelectedTab {
+        get { return selected; }
+        set {
+            if (value == selected) return;
+            if (value != null && !TabPages.Contains(value)) throw new ArgumentException("Unknown page.");
+            if (selected != null) selected.Visible = false;
+            selected = value;
+            if (selected != null) {
+                selected.Visible = true;
+                selected.BringToFront();
+            }
+            EventHandler changed = SelectedIndexChanged;
+            if (changed != null) changed(this, EventArgs.Empty);
+        }
     }
 }
 
@@ -882,6 +927,21 @@ static class GameDirectoryFinder {
 
 sealed class MainForm : Form {
     const string TitleText = "Bloodborne PC 中文安装与启动器";
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    protected override void OnHandleCreated(EventArgs e) {
+        base.OnHandleCreated(e);
+        ApplyWindowChrome();
+    }
+
+    void ApplyWindowChrome() {
+        try {
+            int dark = LauncherPalette.Dark ? 1 : 0;
+            DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
+        } catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
     static Color ThemeInput { get { return LauncherPalette.Input; } }
     static Color ThemeText { get { return LauncherPalette.Text; } }
     static Color ThemeMuted { get { return LauncherPalette.Muted; } }
@@ -1075,11 +1135,11 @@ sealed class MainForm : Form {
     Button renameCharacterButton;
     Button backupButton, restoreButton, importFolderButton, importZipButton, exportButton, refreshSaveButton;
     Button installButton, saveButton, playButton;
-    TabControl tabs;
-    TabPage logPage;
+    LauncherPages tabs;
+    LauncherPage logPage;
     Label pageHeading, pageDescription;
-    readonly Dictionary<TabPage, Button> navigationButtons = new Dictionary<TabPage, Button>();
-    readonly Dictionary<TabPage, string> navigationDescriptions = new Dictionary<TabPage, string>();
+    readonly Dictionary<LauncherPage, Button> navigationButtons = new Dictionary<LauncherPage, Button>();
+    readonly Dictionary<LauncherPage, string> navigationDescriptions = new Dictionary<LauncherPage, string>();
     ProgressBar progress;
     volatile bool busy;
     Process launcherProcess;
@@ -1169,7 +1229,8 @@ sealed class MainForm : Form {
         string stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BloodbornePC");
         stateFile = Path.Combine(stateDir, "launcher.ini");
         welcomeFile = Path.Combine(stateDir, "welcome-v1.txt");
-        LauncherPalette.Dark = Get(ReadValues(stateFile), "ui_theme", "light") == "dark";
+        LauncherPalette.Dark = Get(ReadValues(stateFile), "ui_theme", "dark") == "dark";
+        if (IsHandleCreated) ApplyWindowChrome();
         Text = TitleText + (PackageVersion.Length == 0 ? "" : "  v" + PackageVersion);
         Font = new Font("Microsoft YaHei UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
@@ -1207,35 +1268,34 @@ sealed class MainForm : Form {
 
     void BuildUi() {
         Image background = LauncherBackground();
-        tabs = new TabControl { Dock = DockStyle.Fill, Appearance = TabAppearance.FlatButtons,
-            SizeMode = TabSizeMode.Fixed, ItemSize = new Size(0, 1), Multiline = true,
-            TabStop = false, Margin = Padding.Empty };
-        TabPage settingsPage = new TabPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage shaderPage = new TabPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage lanPage = new TabPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage onlinePage = new TabPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage seamlessPage = new TabPage("在线无缝联机") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage inputPage = new TabPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage modsPage = new TabPage("Mod 管理") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage savePage = new TabPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage cheatPage = new TabPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage versionPage = new TabPage("版本与更新") { Padding = new Padding(S(8)) };
-        TabPage knownIssuesPage = new TabPage("已知问题") { AutoScroll = true, Padding = new Padding(S(8)) };
-        TabPage helpPage = new TabPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
-        logPage = new TabPage("运行日志") { Padding = new Padding(S(4)) };
-        tabs.TabPages.Add(settingsPage);
-        tabs.TabPages.Add(seamlessPage);
-        tabs.TabPages.Add(lanPage);
-        tabs.TabPages.Add(onlinePage);
-        tabs.TabPages.Add(inputPage);
-        tabs.TabPages.Add(modsPage);
-        tabs.TabPages.Add(savePage);
-        tabs.TabPages.Add(cheatPage);
-        tabs.TabPages.Add(versionPage);
-        tabs.TabPages.Add(knownIssuesPage);
-        tabs.TabPages.Add(helpPage);
-        tabs.TabPages.Add(logPage);
-        tabs.TabPages.Add(shaderPage);
+        tabs = new LauncherPages { Dock = DockStyle.Fill, Tag = "canvas",
+            BackColor = ThemeCanvas, Margin = Padding.Empty };
+        LauncherPage settingsPage = new LauncherPage("设置") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage shaderPage = new LauncherPage("Shader 与画面") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage lanPage = new LauncherPage("局域网联机") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage onlinePage = new LauncherPage("在线联机") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage seamlessPage = new LauncherPage("在线无缝联机") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage inputPage = new LauncherPage("输入与手柄") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage modsPage = new LauncherPage("Mod 管理") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage savePage = new LauncherPage("存档管理") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage cheatPage = new LauncherPage("金手指") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage versionPage = new LauncherPage("版本与更新") { Padding = new Padding(S(8)) };
+        LauncherPage knownIssuesPage = new LauncherPage("已知问题") { AutoScroll = true, Padding = new Padding(S(8)) };
+        LauncherPage helpPage = new LauncherPage("帮助") { AutoScroll = true, Padding = new Padding(S(8)) };
+        logPage = new LauncherPage("运行日志") { Padding = new Padding(S(4)) };
+        tabs.AddPage(settingsPage);
+        tabs.AddPage(seamlessPage);
+        tabs.AddPage(lanPage);
+        tabs.AddPage(onlinePage);
+        tabs.AddPage(inputPage);
+        tabs.AddPage(modsPage);
+        tabs.AddPage(savePage);
+        tabs.AddPage(cheatPage);
+        tabs.AddPage(versionPage);
+        tabs.AddPage(knownIssuesPage);
+        tabs.AddPage(helpPage);
+        tabs.AddPage(logPage);
+        tabs.AddPage(shaderPage);
         tabs.SelectedIndexChanged += delegate {
             if (tabs.SelectedTab == onlinePage) {
                 RefreshPublicStatus();
@@ -1248,7 +1308,7 @@ sealed class MainForm : Form {
             if (tabs.SelectedTab == shaderPage) RefreshShaderCache();
             if (tabs.SelectedTab == modsPage) RefreshMods();
         };
-        foreach (TabPage page in tabs.TabPages) page.BackColor = ThemeCanvas;
+        foreach (LauncherPage page in tabs.TabPages) page.BackColor = ThemeCanvas;
         TableLayoutPanel column = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink };
         column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1993,9 +2053,9 @@ sealed class MainForm : Form {
         UpdateButtons();
     }
 
-    Panel BuildNavigation(TabPage settings, TabPage seamless, TabPage lan, TabPage online,
-        TabPage input, TabPage mods, TabPage saves, TabPage cheats, TabPage shader,
-        TabPage version, TabPage issues, TabPage help, TabPage logs) {
+    Panel BuildNavigation(LauncherPage settings, LauncherPage seamless, LauncherPage lan, LauncherPage online,
+        LauncherPage input, LauncherPage mods, LauncherPage saves, LauncherPage cheats, LauncherPage shader,
+        LauncherPage version, LauncherPage issues, LauncherPage help, LauncherPage logs) {
         Panel sidebar = new Panel { Dock = DockStyle.Left, Width = S(194), Tag = "sidebar",
             BackColor = ThemeSidebar };
         FlowLayoutPanel items = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true,
@@ -2029,7 +2089,7 @@ sealed class MainForm : Form {
             Margin = new Padding(S(9), S(8), 0, S(2)) });
     }
 
-    void AddNavigationItem(FlowLayoutPanel items, TabPage page, string title, string description) {
+    void AddNavigationItem(FlowLayoutPanel items, LauncherPage page, string title, string description) {
         Button button = new Button { Text = title, Tag = page, Width = S(163), Height = S(38),
             TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat,
             FlatAppearance = { BorderSize = 0 },
@@ -2042,11 +2102,13 @@ sealed class MainForm : Form {
     }
 
     void UpdateNavigation() {
-        TabPage selected = tabs.SelectedTab;
-        foreach (KeyValuePair<TabPage, Button> item in navigationButtons) {
+        LauncherPage selected = tabs.SelectedTab;
+        foreach (KeyValuePair<LauncherPage, Button> item in navigationButtons) {
             bool active = item.Key == selected;
-            item.Value.BackColor = active ? ThemeGold : ThemeSidebar;
-            item.Value.ForeColor = active ? LauncherPalette.AccentText : ThemeText;
+            item.Value.BackColor = active ?
+                (LauncherPalette.Dark ? Color.FromArgb(67, 42, 44) : ThemeGold) : ThemeSidebar;
+            item.Value.ForeColor = active ?
+                (LauncherPalette.Dark ? ThemeGold : LauncherPalette.AccentText) : ThemeText;
             item.Value.FlatAppearance.BorderSize = 0;
             item.Value.Padding = new Padding(S(12), 0, S(4), 0);
             item.Value.FlatAppearance.MouseOverBackColor = active ? LauncherPalette.AccentHover : LauncherPalette.Hover;
@@ -2062,6 +2124,7 @@ sealed class MainForm : Form {
         if (LauncherPalette.Dark == dark) return;
         bool previousDark = LauncherPalette.Dark;
         LauncherPalette.Dark = dark;
+        ApplyWindowChrome();
         BackColor = ThemeCanvas;
         ApplyTheme(this, previousDark);
         StylePrimaryButton(playButton);
@@ -2083,7 +2146,7 @@ sealed class MainForm : Form {
     void ApplyTheme(Control parent, bool previousDark) {
         foreach (Control control in parent.Controls) {
             string role = control.Tag as string;
-            if (control is TabPage || role == "canvas") control.BackColor = ThemeCanvas;
+            if (control is LauncherPage || role == "canvas") control.BackColor = ThemeCanvas;
             else if (role == "surface") control.BackColor = LauncherPalette.Surface;
             else if (role == "sidebar") control.BackColor = ThemeSidebar;
             else if (control is LauncherCard) {
@@ -2093,7 +2156,7 @@ sealed class MainForm : Form {
             } else if (control is TableLayoutPanel || control is FlowLayoutPanel)
                 control.BackColor = control.Parent is LauncherCard ? Color.Transparent : control.Parent.BackColor;
             if (control is LauncherComboHost) ((LauncherComboHost)control).RefreshTheme();
-            if (control is Button && !(control.Tag is TabPage)) {
+            if (control is Button && !(control.Tag is LauncherPage)) {
                 Button button = (Button)control;
                 button.FlatStyle = FlatStyle.Flat;
                 button.FlatAppearance.BorderColor = LauncherPalette.Border;
@@ -2133,9 +2196,9 @@ sealed class MainForm : Form {
     void StylePrimaryButton(Button button) {
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseOverBackColor = LauncherPalette.AccentHover;
-        button.BackColor = ThemeGold;
-        button.ForeColor = LauncherPalette.AccentText;
+        button.FlatAppearance.MouseOverBackColor = LauncherPalette.ActionHover;
+        button.BackColor = LauncherPalette.Action;
+        button.ForeColor = Color.White;
         button.Padding = new Padding(S(13), S(6), S(13), S(6));
         button.Font = new Font(Font.FontFamily, 9.5f, FontStyle.Bold);
     }
@@ -4823,7 +4886,7 @@ sealed class MainForm : Form {
             statusLabel.Text = onlineMode ? "安装完成。请在“在线联机”页准备账号与私网。" : "安装完成，可以启动游戏。";
             Log("安装完成。");
             if (onlineMode) {
-                foreach (TabPage page in tabs.TabPages)
+                foreach (LauncherPage page in tabs.TabPages)
                     if (page.Text == "在线联机") { tabs.SelectedTab = page; break; }
                 return;
             }
