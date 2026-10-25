@@ -2,6 +2,8 @@
 
 启动器的「Mod 管理」页管理玩家数据目录下的 `mods/` 和 `mods.json`。总体开关、每个 Mod 的勾选在下次启动时生效。底层 `scripts/mods.py` 在临时目录建立文件覆盖层，不覆盖游戏本体；同一文件被多个 Mod 修改时，靠后的 Mod 生效。排查联机、存档或画面异常时，先关闭全部 Mod，并让队友使用相同配置。
 
+启动日志应显示 `Mods: enabled; directory=<玩家数据目录>\mods`，并在实际应用时显示 `Mods: <名称>: <文件数> files` 和替换文件数。若仍显示运行环境目录下的 `mods`，说明启动器未传入玩家数据目录，旧版启动器需要更新；若显示 `0 files`，检查目录层级及 Mod 内容。Xbox 按钮文件的最终路径应为 `<玩家数据目录>\mods\Xbox 按钮\dvdroot_ps4\menu\common.tpf.dcx`（文件夹名称可以不同）。
+
 首个推荐 Mod 是 [Dommo 的 Xbox (and switch) UI for Bloodborne](https://www.nexusmods.com/bloodborne/mods/30?tab=files)。选择一个 **Modern Xbox prompts** 主文件；启动器支持导入 ZIP，或从 7z/RAR 手动解压得到的单个 `common.tpf.dcx`。不要导入包含多个版本的整合包。导入后默认关闭，勾选才启用。作者页面说明该 Mod 替换 `dvdroot_ps4/menu/common.tpf.dcx`，并允许注明作者后转载；服务器、启动器和网站须署名 Dommo、链接原页面，不得售卖 Mod。
 
 服务器下载需要先合法取得并核对单版本 ZIP。当前仓库**不包含**该文件，也没有可验证的 Nexus 直链；Nexus 的普通下载经网页登录，不能把网页 URL 伪装成直链。未提供文件和 SHA-256 时，启动器明确显示「服务器文件待发布」，仍可通过官方页面下载再本地导入。

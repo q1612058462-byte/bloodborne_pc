@@ -46,6 +46,26 @@ class ModTests(unittest.TestCase):
         self.assertFalse((self.assets / 'new.dcx').exists())
         self.assertEqual((result / 'eboot.bin').read_bytes(), b'original executable')
 
+    def test_xbox_button_layout_and_launcher_path_wiring(self):
+        original = self.game / 'dvdroot_ps4/menu/common.tpf.dcx'
+        original.parent.mkdir(parents=True)
+        original.write_bytes(b'playstation')
+        player_data = self.root / 'playerData1'
+        xbox = player_data / 'mods/Xbox 按钮'
+        replacement = xbox / 'dvdroot_ps4/menu/common.tpf.dcx'
+        replacement.parent.mkdir(parents=True)
+        replacement.write_bytes(b'xbox')
+        config = player_data / 'mods.json'
+        config.write_text(json.dumps({'order': ['Xbox 按钮'], 'disabled': []}))
+        layers = [(name, player_data / 'mods' / name)
+                  for name in mods.selected(player_data / 'mods', config)]
+        result = mods.build_overlay(self.game, self.root / 'out', layers)
+        self.assertEqual((result / 'dvdroot_ps4/menu/common.tpf.dcx').read_bytes(), b'xbox')
+        self.assertEqual(original.read_bytes(), b'playstation')
+        launcher = (ROOT / 'tools/setup/BbportPortable.cs').read_text(encoding='utf-8')
+        self.assertIn('options.Env["BB_MODS_DIR"] = Path.Combine(options.SaveRoot, "mods")', launcher)
+        self.assertIn('options.Env["BB_MODS_CONFIG"] = Path.Combine(options.SaveRoot, "mods.json")', launcher)
+
     def test_last_mod_wins_and_reordering_changes_winner(self):
         a, b = self.mod('A', b'A'), self.mod('B', b'B')
         for layers, winner in [([('A', a), ('B', b)], b'B'), ([('B', b), ('A', a)], b'A')]:

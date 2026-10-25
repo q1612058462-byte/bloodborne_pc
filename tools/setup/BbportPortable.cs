@@ -4243,6 +4243,8 @@ sealed class MainForm : Form {
             options.Env["BB_PAD_" + binding.Key] = Value(binding.Value);
         options.Env["BB_MOUSE_ENABLED"] = mouseEnabled.Checked ? "1" : "0";
         options.Env["BB_MODS_ENABLED"] = modsEnabled.Checked ? "1" : "0";
+        options.Env["BB_MODS_DIR"] = Path.Combine(options.SaveRoot, "mods");
+        options.Env["BB_MODS_CONFIG"] = Path.Combine(options.SaveRoot, "mods.json");
         options.Env["BB_MOUSE_CAMERA"] = mouseDirect.Checked ? "direct" : "stick";
         options.Env["BB_MOUSE_INVERT_Y"] = mouseInvert.Checked ? "1" : "0";
         options.Env["BB_MOUSE_SENSITIVITY"] = mouseSensitivity.Value.ToString("0.0", CultureInfo.InvariantCulture);

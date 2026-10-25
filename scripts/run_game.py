@@ -485,10 +485,18 @@ def main():
         os.environ['BB_RESTART_COMMAND'] = subprocess.list2cmdline(
             [PYTHON, str(Path(__file__).resolve()), *restart])
 
+    player_mods = Path(env('BB_USER_DIR', os.path.join(data, 'user'))) / 'mods'
+    legacy_mods = Path(data) / 'mods'
+    # Existing direct run.bat users may still keep mods beside bbport.ini. The
+    # launcher passes BB_MODS_DIR explicitly so its Mod page and the game agree.
+    default_mods = player_mods if player_mods.is_dir() or not legacy_mods.is_dir() else legacy_mods
+    mods_dir = Path(env('BB_MODS_DIR', str(default_mods)))
+    mods_config = env('BB_MODS_CONFIG', str(mods_dir.parent / 'mods.json'))
+    mods_enabled = env('BB_MODS_ENABLED', '1')
+    print(f'Mods: {"enabled" if mods_enabled == "1" else "disabled"}; directory={mods_dir}; config={mods_config}')
     merged = run([PYTHON, 'scripts/mods.py', original, '--out', out,
-                  '--mods-dir', env('BB_MODS_DIR', os.path.join(data, 'mods')),
-                  '--config', env('BB_MODS_CONFIG', os.path.join(data, 'mods.json')),
-                  '--enabled', env('BB_MODS_ENABLED', '1')], capture=True)
+                  '--mods-dir', mods_dir, '--config', mods_config,
+                  '--enabled', mods_enabled], capture=True)
     if not merged:
         sys.exit('Mods: no game folder from scripts/mods.py')
     # A private merged view lasts for this launch, including restarts. Only our own view is removed.
