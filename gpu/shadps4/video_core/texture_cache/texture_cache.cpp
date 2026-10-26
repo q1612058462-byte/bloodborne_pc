@@ -1170,6 +1170,12 @@ void TextureCache::GarbageCollectImages() {
             return true;
         }
         auto& image = slot_images[image_id];
+        // Binding flags are cleared after a submission. Never evict an image that the
+        // rasterizer or presenter can still reference, even under emergency pressure.
+        if (image.binding.is_bound || image.binding.is_target || image.usage.vo_surface) {
+            lru_cache.Touch(image.lru_id, gc_tick);
+            return false;
+        }
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
         if (tiled && download) {

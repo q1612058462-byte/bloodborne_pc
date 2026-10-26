@@ -1,12 +1,13 @@
 """Boundary tests for the native loader; uses tiny synthetic x86-64 images."""
 from paths import ROOT
 from pathlib import Path
+import os
 import struct
 import subprocess
 import tempfile
 import unittest
 
-EXE = ROOT / 'out/bb-probe'
+EXE = ROOT / ('out/bb-probe.exe' if os.name == 'nt' else 'out/bb-probe')
 
 
 def package(code, relocs=(), names=(), capabilities=None):
@@ -116,7 +117,7 @@ class LoaderTests(unittest.TestCase):
     def test_illegal_instruction_reports_guest_offset(self):
         r = self.run_image(package(b'\x0f\x0b'))
         self.assertEqual(r.returncode, 132)
-        self.assertIn('at guest offset 0x0,', r.stderr)
+        self.assertIn('at guest+0x0' if os.name == 'nt' else 'at guest offset 0x0,', r.stderr)
 
     def test_runtime_returns_from_verified_init_env(self):
         # Align stack, call _init_env through +32, then tail-jump to unknown +40.

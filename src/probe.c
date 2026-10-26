@@ -41,6 +41,10 @@ static LinkedModule modules[16];
 static uint64_t module_count;
 static int entered_game;
 static int gpu_enabled;
+#ifdef _WIN32
+static char game_title_id[16];
+static char game_app_ver[16];
+#endif
 int vulkan_smoke(void);
 
 static __attribute__((noreturn)) void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
@@ -159,6 +163,47 @@ static void recover_jump(void) {
 static int guest_address(uintptr_t a) {
     return (image && a - (uintptr_t)image < image_size) || (traps_base && a - (uintptr_t)traps_base < traps_size);
 }
+/* CUSA03173 v1.09 has a known particle-stream NULL read at guest+0x28cf0d6.
+ * The stack layout here is specific to that function. A different game image or an
+ * unreadable frame must keep the normal crash path rather than guessing an unwind. */
+static int recover_particle_stream(EXCEPTION_POINTERS *e) {
+    EXCEPTION_RECORD *r = e->ExceptionRecord;
+    CONTEXT *c = e->ContextRecord;
+    const uintptr_t base = (uintptr_t)image;
+    if (!image || image_size <= 0x53e4570 || c->Rip != base + 0x28cf0d6 ||
+        strcmp(game_title_id, "CUSA03173") || strcmp(game_app_ver, "01.09") ||
+        r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 ||
+        r->ExceptionInformation[0] != 0 || r->ExceptionInformation[1] >= 0x10000)
+        return 0;
+    int64_t signature;
+    memcpy(&signature, image + 0x53e4568, sizeof(signature));
+    if (signature != -1840) return 0;
+    const uintptr_t rsp = (uintptr_t)c->Rsp;
+    if ((rsp & 7) || rsp > UINTPTR_MAX - 0x58) return 0;
+    uint64_t frame[11];
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), (const void *)rsp, frame, sizeof(frame), &read) ||
+        read != sizeof(frame)) return 0;
+    const uintptr_t return_address = (uintptr_t)frame[10];
+    if (return_address - base >= image_size ||
+        (return_address >= base + 0x28ceec0 && return_address < base + 0x28cf572))
+        return 0;
+    static _Thread_local unsigned recovered;
+    if (recovered >= 8) return 0;
+    ++recovered;
+    fprintf(stderr, "[REDZONE GUARD HIT] guest+0x28cf0d6: recovered particle stream "
+                    "NULL read (%u/8 on this thread); returning to guest+0x%llx\n",
+            recovered, (unsigned long long)(return_address - base));
+    c->Rbx = frame[4];
+    c->R12 = frame[5];
+    c->R13 = frame[6];
+    c->R14 = frame[7];
+    c->R15 = frame[8];
+    c->Rbp = frame[9];
+    c->Rip = return_address;
+    c->Rsp = rsp + 0x58;
+    return 1;
+}
 /* Module+offset without the loader lock (another thread may hold it while this one crashed). */
 static void describe(char *out, size_t size, uintptr_t a) {
     MEMORY_BASIC_INFORMATION info;
@@ -189,6 +234,9 @@ static __attribute__((noreturn)) void terminate(unsigned code) {
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(), code);
     _exit((int)code);
+}
+static unsigned exception_exit_code(DWORD code) {
+    return code == EXCEPTION_ILLEGAL_INSTRUCTION ? 128 + 4 : 128 + 11;
 }
 static void report_exception(EXCEPTION_POINTERS *e) {
     static volatile LONG reporting;
@@ -251,7 +299,8 @@ static void report_exception(EXCEPTION_POINTERS *e) {
         fprintf(stderr, "  host #%u %s\n", i, where);
     }
     if (gpu_enabled && r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) bbgpu_dump_guest_writes(e);
-    fprintf(stderr, "=== end crash report; launcher exit code 139 ===\n");
+    fprintf(stderr, "=== end crash report; launcher exit code %u ===\n",
+            exception_exit_code(r->ExceptionCode));
     fflush(NULL);
 }
 /* Thread dump on request: SetEvent on "Local\bbport-dump-<pid>" prints every thread's call
@@ -437,15 +486,16 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *e) {
             c->Rip = (DWORD64)(uintptr_t)recover_jump;
             return EXCEPTION_CONTINUE_EXECUTION;
         }
+        if (recover_particle_stream(e)) return EXCEPTION_CONTINUE_EXECUTION;
     }
     /* Host code may handle its own exceptions (drivers probe memory under __try). */
     if (!fatal(r->ExceptionCode) || !guest_address((uintptr_t)e->ContextRecord->Rip)) return EXCEPTION_CONTINUE_SEARCH;
     report_exception(e);
-    terminate(128 + 11);
+    terminate(exception_exit_code(r->ExceptionCode));
 }
 static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *e) {
     report_exception(e);
-    terminate(128 + 11);
+    terminate(exception_exit_code(e->ExceptionRecord->ExceptionCode));
 }
 /* link_modules.py rewrote the guest's `mov rax, fs:[0]` into `mov rax, gs:[0]`. GS is the TEB
  * on Windows, and the thread's guest TCB is in a TLS slot (runtime_thread.c). A slot below 64
@@ -851,6 +901,10 @@ int main(int argc, char **argv) {
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
         sfo_value(sfo,"TITLE",title,sizeof(title),NULL);
         sfo_value(sfo,"TITLE_ID",serial,sizeof(serial),NULL);
+#ifdef _WIN32
+        memcpy(game_title_id, serial, sizeof(game_title_id));
+        sfo_value(sfo,"APP_VER",game_app_ver,sizeof(game_app_ver),NULL);
+#endif
         sfo_value(sfo,"ATTRIBUTE",NULL,0,&attributes);
         uint64_t sdk=0;
         if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */

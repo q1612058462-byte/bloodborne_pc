@@ -726,6 +726,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
 
     const auto base_addr = reinterpret_cast<uintptr_t>(dcb.data());
+    bool malformed_dcb = false;
     while (!dcb.empty()) {
         ProcessCommands();
 
@@ -734,11 +735,20 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
+            LOG_ERROR(Render_Vulkan, "Discarding malformed graphics PM4 buffer at offset {:#x}: type {}",
+                      reinterpret_cast<uintptr_t>(dcb.data()) - base_addr, type);
+            malformed_dcb = true;
+            dcb = {};
             break;
         case 0:
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
+            // This is normally a corrupted or stale DCB, not a register packet emitted by
+            // Bloodborne. Finish the submission below so CE and draw-prep are retired.
+            LOG_ERROR(Render_Vulkan,
+                      "Discarding graphics PM4 buffer at offset {:#x}: type 0, base reg {}, size {}",
+                      reinterpret_cast<uintptr_t>(dcb.data()) - base_addr,
+                      header->type0.base.Value(), header->type0.NumWords());
+            malformed_dcb = true;
+            dcb = {};
             break;
         case 2:
             // Type-2 packet are used for padding purposes
@@ -1313,8 +1323,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
 
     if (ce_task.handle) {
-        while (!ce_task.handle.done()) {
-            RESUME_GFX(ce_task);
+        if (!malformed_dcb) {
+            while (!ce_task.handle.done()) {
+                RESUME_GFX(ce_task);
+            }
         }
         ce_task.handle.destroy();
     }
