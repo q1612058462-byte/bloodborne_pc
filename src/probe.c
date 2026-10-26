@@ -41,10 +41,6 @@ static LinkedModule modules[16];
 static uint64_t module_count;
 static int entered_game;
 static int gpu_enabled;
-#ifdef _WIN32
-static char game_title_id[16];
-static char game_app_ver[16];
-#endif
 int vulkan_smoke(void);
 
 static __attribute__((noreturn)) void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
@@ -163,18 +159,23 @@ static void recover_jump(void) {
 static int guest_address(uintptr_t a) {
     return (image && a - (uintptr_t)image < image_size) || (traps_base && a - (uintptr_t)traps_base < traps_size);
 }
-/* CUSA03173 v1.09 has a known particle-stream NULL read at guest+0x28cf0d6.
- * The stack layout here is specific to that function. A different game image or an
- * unreadable frame must keep the normal crash path rather than guessing an unwind. */
+/* Recover the known particle-stream NULL read by verifying the code and frame layout,
+ * independently of the TITLE_ID stored in param.sfo. Some dumps have a different title
+ * identifier but the same executable image. An unfamiliar layout keeps the crash path. */
 static int recover_particle_stream(EXCEPTION_POINTERS *e) {
     EXCEPTION_RECORD *r = e->ExceptionRecord;
     CONTEXT *c = e->ContextRecord;
     const uintptr_t base = (uintptr_t)image;
     if (!image || image_size <= 0x53e4570 || c->Rip != base + 0x28cf0d6 ||
-        strcmp(game_title_id, "CUSA03173") || strcmp(game_app_ver, "01.09") ||
         r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 ||
         r->ExceptionInformation[0] != 0 || r->ExceptionInformation[1] >= 0x10000)
         return 0;
+    static const unsigned char prologue[] = {
+        0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x20
+    };
+    static const unsigned char fault_instruction[] = {0x8b, 0x0c, 0x01};
+    if (memcmp(image + 0x28ceec0, prologue, sizeof(prologue)) ||
+        memcmp(image + 0x28cf0d6, fault_instruction, sizeof(fault_instruction))) return 0;
     int64_t signature;
     memcpy(&signature, image + 0x53e4568, sizeof(signature));
     if (signature != -1840) return 0;
@@ -901,10 +902,6 @@ int main(int argc, char **argv) {
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0 ? app0 : ".");
         sfo_value(sfo,"TITLE",title,sizeof(title),NULL);
         sfo_value(sfo,"TITLE_ID",serial,sizeof(serial),NULL);
-#ifdef _WIN32
-        memcpy(game_title_id, serial, sizeof(game_title_id));
-        sfo_value(sfo,"APP_VER",game_app_ver,sizeof(game_app_ver),NULL);
-#endif
         sfo_value(sfo,"ATTRIBUTE",NULL,0,&attributes);
         uint64_t sdk=0;
         if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
