@@ -1,0 +1,17 @@
+diff --git a/emulator/src/core/bloodborne_re.cpp b/emulator/src/core/bloodborne_re.cpp
+--- a/emulator/src/core/bloodborne_re.cpp
++++ b/emulator/src/core/bloodborne_re.cpp
+@@ -1249,7 +1249,13 @@ void ApplyCrossMapSummonHostPlacement(const GuestRegisterSnapshot& registers) {
+     if (!ReadLocalSummonPlacement(host, host_placement_rewrite.result)) {
+         return;
+     }
+     if (host_placement_rewrite.candidate.packed_region == host.packed_region) {
++        // The HTTP claim follows SummonBuild.Entry immediately. The cache was cleared at
++        // entry, so restore the current host position before the same-map early return.
++        {
++            std::scoped_lock lock{seamless_placement_mutex};
++            seamless_host_placement = host;
++        }
+         host_placement_rewrite.result = "same_map";
+         return;
+     }

@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/bbsc-client-187.yml
       - deploy/seamless_lab/patches/bbsc-0.0.2-client-1.8.7.patch
+      - deploy/seamless_lab/patches/bbsc-0.0.2-host-placement.patch
       - tools/setup/BuildBbsc002Client.cmd
 
 jobs:
@@ -27,6 +28,9 @@ jobs:
       - name: Apply Windows 1.8.7 fixes
         shell: pwsh
         run: git -C "$env:RUNNER_TEMP\bbsc-002" apply "$env:GITHUB_WORKSPACE\deploy\seamless_lab\patches\bbsc-0.0.2-client-1.8.7.patch"
+      - name: Preserve same-map host placement on claim
+        shell: pwsh
+        run: git -C "$env:RUNNER_TEMP\bbsc-002" apply "$env:GITHUB_WORKSPACE\deploy\seamless_lab\patches\bbsc-0.0.2-host-placement.patch"
       - name: Compile BBSC launcher and mod
         shell: cmd
         run: tools\setup\BuildBbsc002Client.cmd "%RUNNER_TEMP%\bbsc-002" "%RUNNER_TEMP%\bbsc-187"
@@ -40,7 +44,7 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: bbsc-0.0.2-patched-client-1.8.7
+          name: bbsc-0.0.2-patched-client-1.9.3
           path: |
             ${{ runner.temp }}\bbsc-187\bbsc.dll
             ${{ runner.temp }}\bbsc-187\bbsc-launch.exe
